@@ -1,19 +1,19 @@
 import struct
 from typing import Any, Dict, List, Optional, Set, Type, Union
 
-from asyncmy import Connection
-from asyncmy.constants.COMMAND import COM_BINLOG_DUMP, COM_BINLOG_DUMP_GTID, COM_REGISTER_SLAVE
-from asyncmy.cursors import DictCursor
-from asyncmy.errors import OperationalError
-from asyncmy.replication.constants import (
+from ..connection import Connection
+from ..constants.COMMAND import COM_BINLOG_DUMP, COM_BINLOG_DUMP_GTID, COM_REGISTER_SLAVE
+from ..cursors import DictCursor
+from ..errors import OperationalError
+from .constants import (
     BINLOG_DUMP_NON_BLOCK,
     BINLOG_THROUGH_GTID,
     MAX_HEARTBEAT,
     ROTATE_EVENT,
     TABLE_MAP_EVENT,
 )
-from asyncmy.replication.errors import BinLogNotEnabledError
-from asyncmy.replication.events import (
+from .errors import BinLogNotEnabledError
+from .events import (
     BeginLoadQueryEvent,
     BinLogEvent,
     ExecuteLoadQueryEvent,
@@ -26,9 +26,9 @@ from asyncmy.replication.events import (
     StopEvent,
     XidEvent,
 )
-from asyncmy.replication.gtid import Gtid, GtidSet
-from asyncmy.replication.packets import BinLogPacket
-from asyncmy.replication.row_events import (
+from .gtid import Gtid, GtidSet
+from .packets import BinLogPacket
+from .row_events import (
     DeleteRowsEvent,
     TableMapEvent,
     UpdateRowsEvent,

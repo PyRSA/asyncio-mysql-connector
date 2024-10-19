@@ -16,7 +16,7 @@ RE_INSERT_VALUES = re.compile(
 )
 logger = logging.getLogger(__package__)
 if typing.TYPE_CHECKING:
-    from asyncmy.connection import Connection
+    from .connection import Connection
 
 cdef class Cursor:
     """

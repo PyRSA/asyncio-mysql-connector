@@ -127,7 +127,11 @@ _map_error(
 
 cpdef raise_mysql_exception(bytes data):
     errno = H.unpack(data[1:3])[0]
-    if data[3] == ord("#"):
+    # https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_err_packet.html
+    # Error packet has optional sqlstate that is 5 bytes and starts with '#'.
+    if data[3] == 0x23:  # hex(ord("#"))
+        # sqlstate = data[4:9].decode()
+        # TODO: Append (sqlstate) in the error message. This will be come in next minor release.
         err_val = data[9:].decode("utf-8", "replace")
     else:
         err_val = data[3:].decode("utf-8", "replace")

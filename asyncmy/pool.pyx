@@ -2,8 +2,8 @@ import asyncio
 import collections
 from typing import Deque, Set
 
-from asyncmy.connection import Connection, connect
-from asyncmy.contexts import _PoolAcquireContextManager, _PoolContextManager
+from .connection import Connection, connect
+from .contexts import _PoolAcquireContextManager, _PoolContextManager
 
 
 class Pool(asyncio.AbstractServer):
@@ -65,7 +65,7 @@ class Pool(asyncio.AbstractServer):
         """Close pool.
 
         Mark all pool connections to be closed on getting back to pool.
-        Closed pool doesn't allow to acquire new connections.
+        Closed pool doesn't allow once to acquire new connections.
         """
         if self._closed:
             return

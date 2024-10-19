@@ -1,14 +1,14 @@
 import struct
 
-from asyncmy.constants.COLUMN import (
+from ..constants.COLUMN import (
     NULL_COLUMN,
     UNSIGNED_CHAR_COLUMN,
     UNSIGNED_INT24_COLUMN,
     UNSIGNED_INT64_COLUMN,
     UNSIGNED_SHORT_COLUMN,
 )
-from asyncmy.replication import events, row_events
-from asyncmy.replication.constants import (
+from . import events, row_events
+from .constants import (
     ANONYMOUS_GTID_LOG_EVENT,
     BEGIN_LOAD_QUERY_EVENT,
     DELETE_ROWS_EVENT_V1,
@@ -48,7 +48,7 @@ from asyncmy.replication.constants import (
     WRITE_ROWS_EVENT_V2,
     XID_EVENT,
 )
-from asyncmy.replication.utils import byte2int
+from .utils import byte2int
 
 
 class BinLogPacket:

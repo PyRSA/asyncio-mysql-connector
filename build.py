@@ -1,4 +1,7 @@
-from distutils.command.build_ext import build_ext
+# from distutils.command.build_ext import build_ext
+# The distutils module is deprecated since Python 3.10.
+# See also https://setuptools.pypa.io/en/latest/deprecated/distutils-legacy.html
+from setuptools.command.build_ext import build_ext
 
 from Cython.Build import cythonize
 

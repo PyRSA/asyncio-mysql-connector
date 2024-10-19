@@ -2,8 +2,8 @@ import datetime
 import decimal
 import struct
 
-from asyncmy.charset import charset_by_name
-from asyncmy.constants.FIELD_TYPE import (
+from ..charset import charset_by_name
+from ..constants.FIELD_TYPE import (
     BIT,
     BLOB,
     DATE,

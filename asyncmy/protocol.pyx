@@ -1,14 +1,16 @@
-
-from .constants.COLUMN import (NULL_COLUMN, UNSIGNED_CHAR_COLUMN,
-                               UNSIGNED_INT24_COLUMN, UNSIGNED_INT64_COLUMN,
-                               UNSIGNED_SHORT_COLUMN)
+from .constants.COLUMN import (
+    NULL_COLUMN,
+    UNSIGNED_CHAR_COLUMN,
+    UNSIGNED_INT24_COLUMN,
+    UNSIGNED_INT64_COLUMN,
+    UNSIGNED_SHORT_COLUMN
+)
 from .constants.FIELD_TYPE import VAR_STRING
 from .constants.SERVER_STATUS import SERVER_MORE_RESULTS_EXISTS
 from .structs import HB, H, I, Q
 
 include "charset.pxd"
 from . import errors, structs
-
 
 cdef class MysqlPacket:
     """

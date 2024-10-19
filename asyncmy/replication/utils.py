@@ -1,4 +1,4 @@
-from asyncmy.structs import B
+from ..structs import B
 
 
 def byte2int(b):

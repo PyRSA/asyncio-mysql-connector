@@ -11,29 +11,60 @@ import warnings
 from asyncio import StreamReader, StreamWriter
 from typing import Optional, Type
 
-from asyncmy import auth, converters, errors
-from asyncmy.charset import charset_by_id, charset_by_name
-from asyncmy.cursors import Cursor
-from asyncmy.optionfile import Parser
-from asyncmy.protocol import (EOFPacketWrapper, FieldDescriptorPacket,
-                              LoadLocalPacketWrapper, MysqlPacket,
-                              OKPacketWrapper)
+from . import auth, converters, errors
+from .charset import charset_by_id, charset_by_name
+from .cursors import Cursor
+from .optionfile import Parser
+from .protocol import (
+    EOFPacketWrapper,
+    FieldDescriptorPacket,
+    LoadLocalPacketWrapper,
+    MysqlPacket,
+    OKPacketWrapper
+)
 
-from .constants.CLIENT import (CAPABILITIES, CONNECT_ATTRS, CONNECT_WITH_DB,
-                               LOCAL_FILES, MULTI_RESULTS, MULTI_STATEMENTS,
-                               PLUGIN_AUTH, PLUGIN_AUTH_LENENC_CLIENT_DATA,
-                               SECURE_CONNECTION, SSL)
-from .constants.COMMAND import (COM_INIT_DB, COM_PING, COM_PROCESS_KILL,
-                                COM_QUERY, COM_QUIT)
-from .constants.CR import (CR_COMMANDS_OUT_OF_SYNC, CR_CONN_HOST_ERROR,
-                           CR_SERVER_LOST)
+from .constants.CLIENT import (
+    CAPABILITIES,
+    CONNECT_ATTRS,
+    CONNECT_WITH_DB,
+    LOCAL_FILES,
+    MULTI_RESULTS,
+    MULTI_STATEMENTS,
+    PLUGIN_AUTH,
+    PLUGIN_AUTH_LENENC_CLIENT_DATA,
+    SECURE_CONNECTION,
+    SSL
+)
+from .constants.COMMAND import (
+    COM_INIT_DB,
+    COM_PING,
+    COM_PROCESS_KILL,
+    COM_QUERY,
+    COM_QUIT
+)
+from .constants.CR import (
+    CR_COMMANDS_OUT_OF_SYNC,
+    CR_CONN_HOST_ERROR,
+    CR_SERVER_LOST
+)
 from .constants.ER import FILE_NOT_FOUND
-from .constants.FIELD_TYPE import (BIT, BLOB, GEOMETRY, JSON, LONG_BLOB,
-                                   MEDIUM_BLOB, STRING, TINY_BLOB, VAR_STRING,
-                                   VARCHAR)
-from .constants.SERVER_STATUS import (SERVER_STATUS_AUTOCOMMIT,
-                                      SERVER_STATUS_IN_TRANS,
-                                      SERVER_STATUS_NO_BACKSLASH_ESCAPES)
+from .constants.FIELD_TYPE import (
+    BIT,
+    BLOB,
+    GEOMETRY,
+    JSON,
+    LONG_BLOB,
+    MEDIUM_BLOB,
+    STRING,
+    TINY_BLOB,
+    VAR_STRING,
+    VARCHAR
+)
+from .constants.SERVER_STATUS import (
+    SERVER_STATUS_AUTOCOMMIT,
+    SERVER_STATUS_IN_TRANS,
+    SERVER_STATUS_NO_BACKSLASH_ESCAPES
+)
 from .contexts import _ConnectionContextManager
 from .structs import B_, BHHB, HBB, IIB, B, H, I, Q, i, iB, iIB23s
 from .version import __VERSION__
@@ -330,7 +361,6 @@ class Connection:
         ctx.options |= ssl.OP_NO_SSLv2
         ctx.options |= ssl.OP_NO_SSLv3
         return ctx
-
 
     def close(self):
         """Close socket connection"""
@@ -750,9 +780,14 @@ class Connection:
         if self._user is None:
             raise ValueError("Did not specify a username")
 
+        charset_id = charset_by_name(self._charset).id
         if self._ssl_context:
             # capablities, max packet, charset
-            data = IIB.pack(self._client_flag, 16777216, 33)
+            # fix: handshake error with mysql server 8.0.34 when ssl is enabled
+            # @See PR https://github.com/long2ice/asyncmy/pull/102
+            # @See Issues https://github.com/long2ice/asyncmy/issues/80
+            #data = IIB.pack(self._client_flag, 16777216, 33)
+            data = IIB.pack(self._client_flag, MAX_PACKET_LEN, charset_id)
             data += b'\x00' * (32 - len(data))
 
             self.write_packet(data)
@@ -776,7 +811,7 @@ class Connection:
                 sock=raw_sock, ssl=self._ssl_context,
                 server_hostname=self._host,
             )
-        charset_id = charset_by_name(self._charset).id
+        # charset_id = charset_by_name(self._charset).id
         if isinstance(self._user, str):
             self._user = self._user.encode(self._encoding)
 
