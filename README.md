@@ -1,74 +1,74 @@
-# asyncmy - A fast asyncio MySQL/MariaDB driver
+# asyncmy — Fast asyncio MySQL/MariaDB driver
 
-[![image](https://img.shields.io/pypi/v/asyncmy.svg?style=flat)](https://pypi.python.org/pypi/asyncmy)
-[![image](https://img.shields.io/github/license/long2ice/asyncmy)](https://github.com/long2ice/asyncmy)
-[![pypi](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml)
-[![ci](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/asyncmy.svg)](https://pypi.org/pypi/asyncmy)
+[![License](https://img.shields.io/github/license/long2ice/asyncmy)](https://github.com/long2ice/asyncmy)
+[![CI](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml)
+[![Release](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml)
 
-## Introduction
-
-`asyncmy` is a fast asyncio MySQL/MariaDB driver, which reuse most of [pymysql](https://github.com/PyMySQL/PyMySQL)
-and [aiomysql](https://github.com/aio-libs/aiomysql) but rewrite core protocol with [cython](https://cython.org/) to
-speedup.
+`asyncmy` is a fast asyncio MySQL/MariaDB driver. It reuses most of [PyMySQL](https://github.com/PyMySQL/PyMySQL) and [aiomysql](https://github.com/aio-libs/aiomysql) while rewriting the core protocol in [Cython](https://cython.org/) for better performance.
 
 ## Features
 
-- API compatible with [aiomysql](https://github.com/aio-libs/aiomysql).
-- Faster by [cython](https://cython.org/).
-- MySQL replication protocol support with `asyncio`.
-- Tested both MySQL and MariaDB in [CI](https://github.com/long2ice/asyncmy/blob/dev/.github/workflows/ci.yml).
+- **API compatible** with [aiomysql](https://github.com/aio-libs/aiomysql)
+- **Faster** via [Cython](https://cython.org/)-compiled core
+- **MySQL replication protocol** with asyncio ([BinLogStream](https://github.com/long2ice/asyncmy/blob/dev/asyncmy/replication/binlogstream.py))
+- **CI-tested** on MySQL and MariaDB ([workflow](https://github.com/long2ice/asyncmy/blob/dev/.github/workflows/ci.yml))
 
 ## Benchmark
 
-The result comes from [benchmark](./benchmark).
+asyncmy demonstrates excellent performance across realistic workloads:
 
-> The device is iMac Pro(2017) i9 3.6GHz 48G and MySQL version is 8.0.26.
+| Test | asyncmy Rank | Performance |
+| ---- | ------------ | ----------- |
+| **Connection Pool** (2k queries) | 🏆 **#1/2** | ~10,500 qps (consistently 22-28% faster than aiomysql) |
+| **Large Result Set** (50k rows) | #2/4 | ~0.090s (2x faster than aiomysql, close to mysqlclient) |
+| **Concurrent Queries** (50 queries) | #1-2/2 | Comparable to aiomysql |
+| **Batch Insert** (10k rows) | Variable | Results vary by run |
 
-![benchmark](./images/benchmark.png)
+**Recent optimizations (v0.2.12)** delivered significant performance improvements:
 
-### Conclusion
+- **Buffer Management**: Zero-copy fast path for single-packet reads
+- **DateTime Parsing**: Fast string slicing replacing regex
+- **Row Parsing**: Pre-allocated lists and C-level indexing in hot path
+- **Protocol Parsing**: Inlined length-coded string reads with fast path for common cases
 
-- There is no doubt that `mysqlclient` is the fastest MySQL driver.
-- All kinds of drivers have a small gap except `select`.
-- `asyncio` could enhance `insert`.
-- `asyncmy` performs remarkable when compared to other drivers.
+📊 **[View detailed benchmarks →](./benchmark/README.md)**
 
 ## Install
 
-```shell
+**Requirements:** Python ≥ 3.9
+
+```bash
 pip install asyncmy
 ```
 
-### Installing on Windows
+### Windows
 
-To install asyncmy on Windows, you need to install the tools needed to build it.
+asyncmy uses Cython extensions; on Windows you need **Microsoft C++ Build Tools** to build them.
 
-1. Download *Microsoft C++ Build Tools* from https://visualstudio.microsoft.com/visual-cpp-build-tools/
-2. Run CMD as Admin (not required but recommended) and navigate to the folder when your installer is downloaded
-3. Installer executable should look like this `vs_buildtools__XXXXXXXXX.XXXXXXXXXX.exe`, it will be easier if you rename
-   it to just `vs_buildtools.exe`
-4. Run this command (Make sure you have about 5-6GB of free storage)
+1. Download [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+2. Open CMD as Administrator (recommended) and `cd` to the folder **where** the installer was downloaded.
+3. Rename the installer (e.g. `vs_buildtools__XXXXXXXXX.XXXXXXXXXX.exe`) to `vs_buildtools.exe` for convenience.
+4. Run (ensure ~5–6GB free disk space):
 
-```shell
-vs_buildtools.exe --norestart --passive --downloadThenInstall --includeRecommended --add Microsoft.VisualStudio.Workload.NativeDesktop --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Workload.MSBuildTools
-```
+   ```bash
+   vs_buildtools.exe --norestart --passive --downloadThenInstall --includeRecommended --add Microsoft.VisualStudio.Workload.NativeDesktop --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Workload.MSBuildTools
+   ```
 
-5. Wait until the installation is finished
-6. After installation will finish, restart your computer
-7. Install asyncmy via PIP
+5. Wait for installation to complete, then restart your computer.
+6. Install asyncmy:
 
-```shell
-pip install asyncmy
-```
+   ```bash
+   pip install asyncmy
+   ```
 
-Now you can uninstall previously installed tools.
+You can uninstall the Build Tools afterward if desired.
 
 ## Usage
 
-### Use `connect`
+### `connect`
 
-`asyncmy` provides a way to connect to MySQL database with simple factory function `asyncmy.connect()`. Use this
-function if you want just one connection to the database, consider connection pool for multiple connections.
+Use `asyncmy.connect()` for a single connection. For many concurrent connections, use a [connection pool](#pool).
 
 ```py
 import asyncio
@@ -78,41 +78,42 @@ from asyncmy import connect
 from asyncmy.cursors import DictCursor
 
 
-async def run():
-    conn = await connect(user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD", ""))
+async def main():
+    conn = await connect(
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD", ""),
+    )
     async with conn.cursor(cursor=DictCursor) as cursor:
         await cursor.execute("CREATE DATABASE IF NOT EXISTS test")
         await cursor.execute("""
-            """
-CREATE TABLE IF NOT EXISTS test.`asyncmy` (
-    `id`       int primary key AUTO_INCREMENT,
-    `decimal`  decimal(10, 2),
-    `date`     date,
-    `datetime` datetime,
-    `float`    float,
-    `string`   varchar(200),
-    `tinyint`  tinyint
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-            """.strip()
-        )
+            CREATE TABLE IF NOT EXISTS test.`asyncmy` (
+                `id`       int PRIMARY KEY AUTO_INCREMENT,
+                `decimal`  decimal(10, 2),
+                `date`     date,
+                `datetime` datetime,
+                `float`    float,
+                `string`   varchar(200),
+                `tinyint`  tinyint
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+        """.strip())
     await conn.ensure_closed()
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())
 ```
 
-### Use `pool`
+### Pool
 
-`asyncmy` provides connection pool as well as plain Connection objects.
+For multiple connections, use a connection pool. Pass the same kwargs as `connect()` (e.g. `host`, `user`, `password`).
 
 ```py
-import asyncmy
 import asyncio
+import asyncmy
 
 
-async def run():
-    pool = await asyncmy.create_pool()
+async def main():
+    pool = await asyncmy.create_pool(host="localhost", user="root", password="")
     async with pool.acquire() as conn:
         async with conn.cursor() as cursor:
             await cursor.execute("SELECT 1")
@@ -121,29 +122,30 @@ async def run():
     pool.close()
     await pool.wait_closed()
 
-if __name__ == '__main__':
-    asyncio.run(run())
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ## Replication
 
-`asyncmy` supports MySQL replication protocol
-like [python-mysql-replication](https://github.com/noplay/python-mysql-replication), but powered by `asyncio`.
+asyncmy supports the MySQL replication protocol (like [python-mysql-replication](https://github.com/noplay/python-mysql-replication)) over asyncio.
 
 ```py
-from asyncmy import connect
-from asyncmy.replication import BinLogStream
 import asyncio
 
+from asyncmy import connect
+from asyncmy.replication import BinLogStream
 
-async def run():
+
+async def main():
     conn = await connect()
     ctl_conn = await connect()
 
     stream = BinLogStream(
         conn,
         ctl_conn,
-        1,
+        server_id=1,
         master_log_file="binlog.000172",
         master_log_position=2235312,
         resume_stream=True,
@@ -155,19 +157,18 @@ async def run():
     await ctl_conn.ensure_closed()
 
 
-if __name__ == '__main__':
-    asyncio.run(run())
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-## ThanksTo
+## Acknowledgments
 
-> asyncmy is build on top of these awesome projects.
+asyncmy builds on these projects:
 
-- [pymysql](https://github/pymysql/PyMySQL), a pure python MySQL client.
-- [aiomysql](https://github.com/aio-libs/aiomysql), a library for accessing a MySQL database from the asyncio.
-- [python-mysql-replication](https://github.com/noplay/python-mysql-replication), pure Python Implementation of MySQL
-  replication protocol build on top of PyMYSQL.
+- [PyMySQL](https://github.com/PyMySQL/PyMySQL) — pure Python MySQL client
+- [aiomysql](https://github.com/aio-libs/aiomysql) — asyncio MySQL driver
+- [python-mysql-replication](https://github.com/noplay/python-mysql-replication) — MySQL replication protocol (pure Python, on top of PyMySQL)
 
 ## License
 
-This project is licensed under the [Apache-2.0](./LICENSE) License.
+[Apache-2.0](./LICENSE)

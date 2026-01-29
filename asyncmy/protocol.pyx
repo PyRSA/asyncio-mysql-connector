@@ -26,11 +26,19 @@ cdef class MysqlPacket:
     cpdef bytes get_all_data(self):
         return self._data
 
+    cdef bytes _read_fast(self, int size):
+        """Fast internal read without bounds checking."""
+        cdef:
+            int pos = self._position
+            bytes result = self._data[pos: pos + size]
+        self._position = pos + size
+        return result
+
     cpdef bytes read(self, int size):
         """
         Read the first 'size' bytes in packet and advance cursor past them.
-        :param size: 
-        :return: 
+        :param size:
+        :return:
         """
         cdef bytes result = self._data[self._position: self._position + size]
         if len(result) != size:
@@ -124,7 +132,8 @@ cdef class MysqlPacket:
         Length coded numbers can be anywhere from 1 to 9 bytes depending
         on the value of the first byte.
         """
-        cdef int c = self.read_uint8()
+        cdef int c = self._data[self._position]
+        self._position += 1
         if c == NULL_COLUMN:
             return None
         if c < UNSIGNED_CHAR_COLUMN:
@@ -144,10 +153,32 @@ cdef class MysqlPacket:
         (unsigned, positive) integer represented in 1-9 bytes followed by
         that many bytes of binary data.  (For example "cat" would be "3cat".)
         """
-        length = self.read_length_encoded_integer()
-        if length is None:
+        cdef:
+            int c, pos
+            int length
+
+        pos = self._position
+        c = self._data[pos]
+        self._position = pos + 1
+
+        # Fast path: NULL value
+        if c == NULL_COLUMN:
             return None
-        return self.read(length)
+
+        # Fast path: length < 251 (most common case)
+        if c < UNSIGNED_CHAR_COLUMN:
+            length = c
+        elif c == UNSIGNED_SHORT_COLUMN:
+            length = self.read_uint16()
+        elif c == UNSIGNED_INT24_COLUMN:
+            length = self.read_uint24()
+        elif c == UNSIGNED_INT64_COLUMN:
+            length = self.read_uint64()
+        else:
+            return None
+
+        # Use fast read without bounds checking
+        return self._read_fast(length)
 
     cpdef tuple read_struct(self, str fmt):
         s = getattr(structs, fmt[1:])

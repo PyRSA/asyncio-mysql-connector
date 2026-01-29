@@ -618,32 +618,52 @@ class Connection:
         :raise OperationalError: If the connection to the MySQL server is lost.
         :raise InternalError: If the packet sequence number is wrong.
         """
-        buff = bytearray()
-        while True:
-            packet_header = await self._read_bytes(4)
-            btrl, btrh, packet_number = HBB.unpack(packet_header)
-            bytes_to_read = btrl + (btrh << 16)
-            if packet_number != self._next_seq_id:
-                if packet_number == 0:
-                    # MariaDB sends error packet with seqno==0 when shutdown
-                    raise errors.OperationalError(
-                        CR_SERVER_LOST,
-                        "Lost connection to MySQL server during query",
-                    )
-                raise errors.InternalError(
-                    "Packet sequence number wrong - got %d expected %d"
-                    % (packet_number, self._next_seq_id)
+        # Read first packet header and data
+        packet_header = await self._read_bytes(4)
+        btrl, btrh, packet_number = HBB.unpack(packet_header)
+        bytes_to_read = btrl + (btrh << 16)
+        if packet_number != self._next_seq_id:
+            if packet_number == 0:
+                # MariaDB sends error packet with seqno==0 when shutdown
+                raise errors.OperationalError(
+                    CR_SERVER_LOST,
+                    "Lost connection to MySQL server during query",
                 )
-            self._next_seq_id = (self._next_seq_id + 1) % 256
-            recv_data = await self._read_bytes(bytes_to_read)
-            buff.extend(recv_data)
-            # https://dev.mysql.com/doc/internals/en/sending-more-than-16mbyte.html
-            if bytes_to_read == 0xFFFFFF:
-                continue
-            if bytes_to_read < MAX_PACKET_LEN:
-                break
+            raise errors.InternalError(
+                "Packet sequence number wrong - got %d expected %d"
+                % (packet_number, self._next_seq_id)
+            )
+        self._next_seq_id = (self._next_seq_id + 1) % 256
+        recv_data = await self._read_bytes(bytes_to_read)
 
-        packet = packet_type(bytes(buff), encoding=self._encoding)
+        # Fast path: single packet (most common case ~99%)
+        # Avoid bytearray allocation and bytes() conversion
+        if bytes_to_read < MAX_PACKET_LEN:
+            packet = packet_type(recv_data, encoding=self._encoding)
+        else:
+            # Slow path: multiple packets (large data split across 16MB chunks)
+            # Use list accumulation + join to avoid repeated bytearray.extend() reallocations
+            # https://dev.mysql.com/doc/internals/en/sending-more-than-16mbyte.html
+            buff = [recv_data]
+            while bytes_to_read == 0xFFFFFF:
+                packet_header = await self._read_bytes(4)
+                btrl, btrh, packet_number = HBB.unpack(packet_header)
+                bytes_to_read = btrl + (btrh << 16)
+                if packet_number != self._next_seq_id:
+                    if packet_number == 0:
+                        raise errors.OperationalError(
+                            CR_SERVER_LOST,
+                            "Lost connection to MySQL server during query",
+                        )
+                    raise errors.InternalError(
+                        "Packet sequence number wrong - got %d expected %d"
+                        % (packet_number, self._next_seq_id)
+                    )
+                self._next_seq_id = (self._next_seq_id + 1) % 256
+                recv_data = await self._read_bytes(bytes_to_read)
+                buff.append(recv_data)
+
+            packet = packet_type(b''.join(buff), encoding=self._encoding)
         if packet.is_error_packet():
             if self._result is not None and self._result.unbuffered_active is True:
                 self._result.unbuffered_active = False
@@ -1194,20 +1214,31 @@ cdef class MySQLResult:
         self.rows = tuple(rows)
 
     cdef _read_row_from_packet(self, packet: MysqlPacket):
-        row = []
-        for encoding, converter in self.converters:
-            try:
-                data = packet.read_length_coded_string()
-            except IndexError:
-                # No more columns in this row
-                # See https://github.com/PyMySQL/PyMySQL/pull/434
-                break
-            if data is not None:
-                if encoding is not None:
-                    data = data.decode(encoding)
-                if converter is not None:
-                    data = converter(data)
-            row.append(data)
+        cdef:
+            int i, n = len(self.converters)
+            list row = [None] * n  # Pre-allocate list
+            tuple conv_tuple
+            object encoding, converter, data
+
+        for i in range(n):
+            conv_tuple = <tuple>self.converters[i]
+            encoding = conv_tuple[0]
+            converter = conv_tuple[1]
+
+            data = packet.read_length_coded_string()
+            if data is None:
+                # row[i] is already None
+                continue
+
+            # Apply encoding conversion if needed
+            if encoding is not None:
+                data = (<bytes>data).decode(encoding)
+
+            # Apply type converter if needed
+            if converter is not None:
+                data = converter(data)
+
+            row[i] = data
         return tuple(row)
 
     async def _get_descriptions(self):

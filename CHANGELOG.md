@@ -2,6 +2,10 @@
 
 ## 0.2
 
+### 0.2.12
+
+- Performence improvement， details see [benchmark/README.md](benchmark/README.md).
+
 ### 0.2.11
 
 - Fix `'Connection' object has no attribute '_auth_plugin_name'` (#86)

@@ -150,6 +150,32 @@ cpdef object convert_datetime(str obj):
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
 
+    # Fast path: Use string slicing for standard MySQL datetime format
+    # Format: "YYYY-MM-DD HH:MM:SS" (19 chars) or "YYYY-MM-DD HH:MM:SS.ffffff" (26 chars)
+    cdef int obj_len = len(obj)
+    if obj_len >= 19:
+        try:
+            # Extract components using string slicing (faster than regex)
+            # "2007-02-25 23:06:20.123456"
+            #  0123456789012345678901234
+            year = int(obj[0:4])
+            month = int(obj[5:7])
+            day = int(obj[8:10])
+            hour = int(obj[11:13])
+            minute = int(obj[14:16])
+            second = int(obj[17:19])
+
+            # Check for microseconds
+            if obj_len > 20 and obj[19] == '.':
+                microsecond = _convert_second_fraction(obj[20:])
+            else:
+                microsecond = 0
+
+            return datetime.datetime(year, month, day, hour, minute, second, microsecond)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to regex for non-standard formats
     m = DATETIME_RE.match(obj)
     if not m:
         return convert_date(obj)
@@ -233,6 +259,27 @@ cpdef object convert_time(str obj):
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
 
+    # Fast path: Use string slicing for standard MySQL time format
+    # Format: "HH:MM:SS" (8 chars) or "HH:MM:SS.ffffff" (15 chars)
+    cdef int obj_len = len(obj)
+    if obj_len >= 8 and obj[0] != '-':
+        try:
+            # "15:06:17.123456"
+            #  01234567
+            hour = int(obj[0:2])
+            minute = int(obj[3:5])
+            second = int(obj[6:8])
+
+            if obj_len > 9 and obj[8] == '.':
+                microsecond = _convert_second_fraction(obj[9:])
+            else:
+                microsecond = 0
+
+            return datetime.time(hour, minute, second, microsecond)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to regex for non-standard formats
     m = TIME_RE.match(obj)
     if not m:
         return obj
@@ -266,6 +313,21 @@ cpdef object convert_date(obj):
     """
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
+
+    # Fast path: Use string slicing for standard MySQL date format
+    # Format: "YYYY-MM-DD" (10 chars)
+    if len(obj) == 10:
+        try:
+            # "2007-02-26"
+            #  0123456789
+            year = int(obj[0:4])
+            month = int(obj[5:7])
+            day = int(obj[8:10])
+            return datetime.date(year, month, day)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to split for non-standard formats
     try:
         return datetime.date(*[int(x) for x in obj.split("-", 2)])
     except ValueError:
