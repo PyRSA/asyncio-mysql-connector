@@ -11,11 +11,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-15-intel, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23.3
+        uses: pypa/cibuildwheel@v3.3.1
         env:
           CIBW_SKIP: "cp36-* cp37-* pp*"
       - uses: actions/upload-artifact@v4
@@ -25,10 +25,10 @@ jobs:
   build_sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: abatilo/actions-poetry@v3
+      - uses: abatilo/actions-poetry@v4
       - name: Build
         run: poetry build
       - uses: actions/upload-artifact@v4
