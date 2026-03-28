@@ -33,6 +33,6 @@ build: clean
 	@uv build
 
 benchmark: deps
-	@python benchmark/main.py
+	@python -m benchmark.run_all
 
 ci: deps _check _test

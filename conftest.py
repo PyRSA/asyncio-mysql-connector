@@ -2,15 +2,15 @@ import asyncio
 import os
 
 import pytest_asyncio
+from asyncmy.cursors import DictCursor
 
 import asyncmy
 from asyncmy import connect
-from asyncmy.cursors import DictCursor
 
 connection_kwargs = dict(
-    host="127.0.0.1",
-    port=3306,
-    user="root",
+    host=os.getenv("MYSQL_HOST") or "127.0.0.1",
+    port=os.getenv("MYSQL_PORT") or 3306,
+    user=os.getenv("MYSQL_USER") or "root",
     password=os.getenv("MYSQL_PASS") or "123456",
     echo=True,
 )
@@ -18,15 +18,14 @@ connection_kwargs = dict(
 
 @pytest_asyncio.fixture(scope="session")
 def event_loop():
-    policy = asyncio.get_event_loop_policy()
-    res = policy.new_event_loop()
-    asyncio.set_event_loop(res)
-    res._close = res.close
-    res.close = lambda: None
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop._close = loop.close
+    loop.close = lambda: None
 
-    yield res
+    yield loop
 
-    res._close()
+    loop._close()
 
 
 @pytest_asyncio.fixture(scope="session")

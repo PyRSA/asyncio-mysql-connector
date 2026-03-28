@@ -131,7 +131,7 @@ DATETIME_RE = re.compile(
     r"(\d{1,4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?"
 )
 
-cpdef datetime.datetime convert_datetime(str obj):
+cpdef object convert_datetime(str obj):
     """Returns a DATETIME or TIMESTAMP column value as a datetime object:
 
       >>> convert_datetime('2007-02-25 23:06:20')
@@ -139,17 +139,43 @@ cpdef datetime.datetime convert_datetime(str obj):
       >>> convert_datetime('2007-02-25T23:06:20')
       datetime.datetime(2007, 2, 25, 23, 6, 20)
 
-    Illegal values are returned as None:
+    Illegal values are returned as str:
 
-      >>> convert_datetime('2007-02-31T23:06:20') is None
-      True
-      >>> convert_datetime('0000-00-00 00:00:00') is None
-      True
+      >>> convert_datetime('2007-02-31T23:06:20')
+      '2007-02-31T23:06:20'
+      >>> convert_datetime('0000-00-00 00:00:00')
+      '0000-00-00 00:00:00'
 
     """
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
 
+    # Fast path: Use string slicing for standard MySQL datetime format
+    # Format: "YYYY-MM-DD HH:MM:SS" (19 chars) or "YYYY-MM-DD HH:MM:SS.ffffff" (26 chars)
+    cdef int obj_len = len(obj)
+    if obj_len >= 19:
+        try:
+            # Extract components using string slicing (faster than regex)
+            # "2007-02-25 23:06:20.123456"
+            #  0123456789012345678901234
+            year = int(obj[0:4])
+            month = int(obj[5:7])
+            day = int(obj[8:10])
+            hour = int(obj[11:13])
+            minute = int(obj[14:16])
+            second = int(obj[17:19])
+
+            # Check for microseconds
+            if obj_len > 20 and obj[19] == '.':
+                microsecond = _convert_second_fraction(obj[20:])
+            else:
+                microsecond = 0
+
+            return datetime.datetime(year, month, day, hour, minute, second, microsecond)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to regex for non-standard formats
     m = DATETIME_RE.match(obj)
     if not m:
         return convert_date(obj)
@@ -163,7 +189,7 @@ cpdef datetime.datetime convert_datetime(str obj):
 
 TIMEDELTA_RE = re.compile(r"(-)?(\d{1,3}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?")
 
-cpdef datetime.timedelta convert_timedelta(str obj):
+cpdef object convert_timedelta(str obj):
     """Returns a TIME column as a timedelta object:
 
       >>> convert_timedelta('25:06:17')
@@ -171,10 +197,10 @@ cpdef datetime.timedelta convert_timedelta(str obj):
       >>> convert_timedelta('-25:06:17')
       datetime.timedelta(-2, 83177)
 
-    Illegal values are returned as None:
+    Illegal values are returned as str:
 
-      >>> convert_timedelta('random crap') is None
-      True
+      >>> convert_timedelta('random crap')
+      'random crap'
 
     Note that MySQL always returns TIME columns as (+|-)HH:MM:SS, but
     can accept values as (+|-)DD HH:MM:SS. The latter format will not
@@ -208,18 +234,18 @@ cpdef datetime.timedelta convert_timedelta(str obj):
 
 TIME_RE = re.compile(r"(\d{1,2}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?")
 
-cpdef datetime.time convert_time(str obj):
+cpdef object convert_time(str obj):
     """Returns a TIME column as a time object:
 
       >>> convert_time('15:06:17')
       datetime.time(15, 6, 17)
 
-    Illegal values are returned as None:
+    Illegal values are returned as str:
 
-      >>> convert_time('-25:06:17') is None
-      True
-      >>> convert_time('random crap') is None
-      True
+      >>> convert_time('-25:06:17')
+      '-25:06:17'
+      >>> convert_time('random crap')
+      'random crap'
 
     Note that MySQL always returns TIME columns as (+|-)HH:MM:SS, but
     can accept values as (+|-)DD HH:MM:SS. The latter format will not
@@ -233,6 +259,27 @@ cpdef datetime.time convert_time(str obj):
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
 
+    # Fast path: Use string slicing for standard MySQL time format
+    # Format: "HH:MM:SS" (8 chars) or "HH:MM:SS.ffffff" (15 chars)
+    cdef int obj_len = len(obj)
+    if obj_len >= 8 and obj[0] != '-':
+        try:
+            # "15:06:17.123456"
+            #  01234567
+            hour = int(obj[0:2])
+            minute = int(obj[3:5])
+            second = int(obj[6:8])
+
+            if obj_len > 9 and obj[8] == '.':
+                microsecond = _convert_second_fraction(obj[9:])
+            else:
+                microsecond = 0
+
+            return datetime.time(hour, minute, second, microsecond)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to regex for non-standard formats
     m = TIME_RE.match(obj)
     if not m:
         return obj
@@ -250,22 +297,37 @@ cpdef datetime.time convert_time(str obj):
     except ValueError:
         return obj
 
-cpdef datetime.date convert_date(obj):
+cpdef object convert_date(obj):
     """Returns a DATE column as a date object:
 
       >>> convert_date('2007-02-26')
       datetime.date(2007, 2, 26)
 
-    Illegal values are returned as None:
+    Illegal values are returned as str:
 
-      >>> convert_date('2007-02-31') is None
-      True
-      >>> convert_date('0000-00-00') is None
-      True
+      >>> convert_date('2007-02-31')
+      '2007-02-31'
+      >>> convert_date('0000-00-00')
+      '0000-00-00'
 
     """
     if isinstance(obj, (bytes, bytearray)):
         obj = obj.decode("ascii")
+
+    # Fast path: Use string slicing for standard MySQL date format
+    # Format: "YYYY-MM-DD" (10 chars)
+    if len(obj) == 10:
+        try:
+            # "2007-02-26"
+            #  0123456789
+            year = int(obj[0:4])
+            month = int(obj[5:7])
+            day = int(obj[8:10])
+            return datetime.date(year, month, day)
+        except (ValueError, IndexError):
+            pass
+
+    # Fallback to split for non-standard formats
     try:
         return datetime.date(*[int(x) for x in obj.split("-", 2)])
     except ValueError:

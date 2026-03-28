@@ -1,25 +1,28 @@
-import MySQLdb
-import pymysql
-import uvloop
+"""
+New benchmark suite for asyncmy - focused on realistic scenarios.
 
-uvloop.install()
+This benchmark suite tests:
+1. Large result set fetching (data processing efficiency)
+2. Concurrent queries (async advantage)
+3. Connection pool performance
+4. Batch operations (bulk inserts/updates)
+5. Mixed workload scenarios
 
+All tests use realistic patterns, not artificial loops.
+"""
+import os
+
+# Database connection configuration
 connection_kwargs = dict(
-    host="127.0.0.1", port=3306, user="root", password="123456", autocommit=True
+    host=os.getenv("MYSQL_HOST") or "localhost",
+    port=int(os.getenv("MYSQL_PORT") or 3306),
+    user=os.getenv("MYSQL_USER") or "root",
+    password=os.getenv("MYSQL_PASS") or "123456",
+    db="test",  # aiomysql uses 'db' instead of 'database'
+    autocommit=True,
 )
-conn_mysqlclient = MySQLdb.connect(**connection_kwargs)
-conn_pymysql = pymysql.connect(**connection_kwargs)
-COUNT = 50000
 
-data = [
-    (
-        1,
-        "2021-01-01",
-        "2020-07-16 22:49:54",
-        1,
-        "asyncmy",
-        1,
-    )
-    for _ in range(COUNT)
-]
-sql = """INSERT INTO test.asyncmy(`decimal`, `date`, `datetime`, `float`, `string`, `tinyint`) VALUES (%s,%s,%s,%s,%s,%s)"""
+# Test data configuration
+ROW_COUNT = 100000  # Total rows for testing
+BATCH_SIZE = 10000  # Batch size for operations
+CONCURRENT_COUNT = 50  # Number of concurrent operations (limited by MySQL max_connections)

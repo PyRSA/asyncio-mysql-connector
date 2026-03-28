@@ -230,28 +230,49 @@ cdef class Cursor:
     async def _do_execute_many(self, prefix, values, postfix, args, max_stmt_length, encoding):
         conn = self._get_db()
         escape = self._escape_args
+
+        # Pre-encode prefix and postfix once
         if isinstance(prefix, str):
             prefix = prefix.encode(encoding)
         if isinstance(postfix, str):
             postfix = postfix.encode(encoding)
-        sql = bytearray(prefix)
-        args = iter(args)
-        v = values % escape(next(args), conn)
-        if isinstance(v, str):
-            v = v.encode(encoding, "surrogateescape")
-        sql += v
-        rows = 0
+
+        # Process and encode all values upfront
+        # This avoids repeated isinstance() checks and encoding in the loop
+        encoded_values = []
         for arg in args:
             v = values % escape(arg, conn)
             if isinstance(v, str):
                 v = v.encode(encoding, "surrogateescape")
-            if len(sql) + len(v) + len(postfix) + 1 > max_stmt_length:
-                rows += await self.execute(sql + postfix)
-                sql = bytearray(prefix)
+            encoded_values.append(v)
+
+        if not encoded_values:
+            return 0
+
+        rows = 0
+        batch_parts = [prefix, encoded_values[0]]
+        current_length = len(prefix) + len(encoded_values[0])
+
+        # Build batches using list accumulation + join (faster than bytearray +=)
+        for v in encoded_values[1:]:
+            # Check if adding this value would exceed max statement length
+            if current_length + len(v) + len(postfix) + 1 > max_stmt_length:
+                # Execute current batch
+                sql = b''.join(batch_parts) + postfix
+                rows += await self.execute(sql)
+                # Start new batch
+                batch_parts = [prefix, v]
+                current_length = len(prefix) + len(v)
             else:
-                sql += b","
-            sql += v
-        rows += await self.execute(sql + postfix)
+                # Add to current batch
+                batch_parts.append(b",")
+                batch_parts.append(v)
+                current_length += 1 + len(v)
+
+        # Execute final batch
+        sql = b''.join(batch_parts) + postfix
+        rows += await self.execute(sql)
+
         self.rowcount = rows
         return rows
 
