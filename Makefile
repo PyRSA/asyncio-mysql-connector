@@ -4,9 +4,10 @@ MYSQL_PASS ?= "123456"
 
 up:
 	@uv lock --upgrade
+	$(MAKE) deps options=--frozen
 
 deps:
-	uv sync --all-groups --all-extras $(options)
+	uv sync --all-groups $(options)
 
 _style:
 	@ruff format $(checkfiles)
