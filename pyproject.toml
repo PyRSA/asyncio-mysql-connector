@@ -20,24 +20,26 @@ packages = [
     { include = "asyncmy" },
 ]
 
-[tool.poetry.group.dev.dependencies]
-cython = "*"
-mypy = "*"
-rich = "*"
-ruff = "*"
-
-[tool.poetry.group.test.dependencies]
-pytest = "*"
-mysqlclient = "*"
-pymysql = ">=0.8.1"
-aiomysql = "*"
-# Breaking change in 0.23.*
-# https://github.com/pytest-dev/pytest-asyncio/issues/706
-pytest-asyncio = "^0.21.2"
-pytest-mock = "*"
-pytest-xdist = "*"
-cryptography = "*"
-uvloop = { version = "*", markers = "sys_platform != 'win32'" }
+[dependency-groups]
+dev = [
+    "cython",
+    "mypy",
+    "rich",
+    "ruff",
+]
+test = [
+    "pytest",
+    "mysqlclient",
+    "pymysql >=0.8.1",
+    "aiomysql",
+    # Breaking change in 0.23.*
+    # https://github.com/pytest-dev/pytest-asyncio/issues/706
+    "pytest-asyncio >=0.21.2,<0.22",
+    "pytest-mock",
+    "pytest-xdist",
+    "cryptography",
+    "uvloop; sys_platform != 'win32' and implementation_name == 'cpython'",
+]
 
 [tool.poetry.build]
 generate-setup-file = true
