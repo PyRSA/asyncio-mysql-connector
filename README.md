@@ -119,7 +119,8 @@ async def main():
             await cursor.execute("SELECT 1")
             ret = await cursor.fetchone()
             assert ret == (1,)
-    await pool.aclose()
+    pool.close()
+    await pool.wait_closed()
 
 
 if __name__ == "__main__":

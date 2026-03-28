@@ -1,8 +1,17 @@
+from distutils.command.build_ext import build_ext
+
 from Cython.Build import cythonize
 
 
-def pdm_build_update_setup_kwargs(context, setup_kwargs) -> None:
-    setup_kwargs["ext_modules"] = cythonize(
-        ["asyncmy/*.pyx"],
-        language_level="3",
+def build(setup_kwargs):
+    setup_kwargs.update(
+        {
+            "ext_modules": cythonize(
+                [
+                    "asyncmy/*.pyx",
+                ],
+                compiler_directives={"language_level": 3},
+            ),
+            "cmdclass": {"build_ext": build_ext},
+        }
     )
