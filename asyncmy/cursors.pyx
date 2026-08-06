@@ -175,6 +175,29 @@ cdef class Cursor:
         while await self.nextset():
             pass
 
+        conn = self._get_db()
+        # Transparent binary-protocol path: when the connection has a
+        # statement cache, positional pyformat queries run as server-side
+        # prepared statements (no escaping, binary row decoding).
+        if (
+            args is not None
+            and conn._stmt_cache_size > 0
+            and type(query) is str
+            and not isinstance(args, dict)
+        ):
+            stmt_args = args if isinstance(args, (tuple, list)) else (args,)
+            stmt = await conn._acquire_cached_statement(query, len(stmt_args))
+            if stmt is not None:
+                if self._echo:
+                    start = time.time()
+                self._clear_result()
+                await stmt.execute(stmt_args)
+                self._executed = query
+                await self._do_get_result()
+                if self._echo:
+                    logger.info(f"[{round((time.time() - start) * 1000, 2)}ms] {query}")
+                return self.rowcount
+
         query = self.mogrify(query, args)
         if self._echo:
             start = time.time()
@@ -420,6 +443,21 @@ cdef class Cursor:
     ProgrammingError = errors.ProgrammingError
     NotSupportedError = errors.NotSupportedError
 
+cdef list _rows_to_dicts(rows, list fields):
+    """C-level construction of dict rows for the common dict_type=dict case."""
+    cdef:
+        Py_ssize_t nf = len(fields)
+        Py_ssize_t j
+        list out = []
+        dict d
+    for row in rows:
+        d = {}
+        for j in range(nf):
+            d[fields[j]] = row[j]
+        out.append(d)
+    return out
+
+
 class DictCursorMixin:
     # You can override this to use OrderedDict or other dict-like types.
     dict_type = dict
@@ -436,7 +474,10 @@ class DictCursorMixin:
             self._fields = fields
 
         if fields and self._rows:
-            self._rows = [self._conv_row(r) for r in self._rows]
+            if self.dict_type is dict:
+                self._rows = _rows_to_dicts(self._rows, fields)
+            else:
+                self._rows = [self._conv_row(r) for r in self._rows]
 
     def _conv_row(self, row):
         if row is None:

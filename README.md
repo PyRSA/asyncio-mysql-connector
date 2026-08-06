@@ -125,6 +125,19 @@ async with await conn.prepare("SELECT ? + ?") as stmt:
     result = await stmt.execute((1, 2))
 ```
 
+**Transparent mode:** pass `stmt_cache_size=N` to `connect()`/`create_pool()` and
+regular `cursor.execute("... %s ...", args)` calls automatically run as cached
+server-side prepared statements — no code changes needed (ORMs benefit too).
+Queries the server can't prepare fall back to the text protocol silently.
+
+```py
+pool = await asyncmy.create_pool(stmt_cache_size=128, ...)
+```
+
+Note: with the binary protocol, `FLOAT` columns return the exact stored value
+rather than the text protocol's decimal-rounded rendering, which is why this
+is opt-in.
+
 ### Pool
 
 For multiple connections, use a connection pool. Pass the same kwargs as `connect()` (e.g. `host`, `user`, `password`).

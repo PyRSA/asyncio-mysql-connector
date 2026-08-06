@@ -9,6 +9,18 @@
   and results are parsed from the binary protocol — no text parsing for numeric/temporal
   columns. Large scans are ~35% faster than the text protocol; on the cross-language
   benchmark asyncmy's binary scan is now the fastest, ahead of go-sql-driver and mysql_async.
+- Add transparent statement cache: `connect(stmt_cache_size=N)` makes plain
+  `cursor.execute("... %s ...", args)` run as cached server-side prepared statements
+  (binary protocol) with silent text-protocol fallback for unpreparable queries.
+  Opt-in because FLOAT columns return the exact stored value under the binary protocol.
+- Replace StreamReader with a custom `asyncio.BufferedProtocol`: incoming bytes land
+  directly in the parse buffer (zero-copy receive, no per-read Future round-trips).
+- Cache prepared-statement column metadata: repeated executes skip re-parsing column
+  definition packets entirely (C-level packet skipping).
+- SSCursor now bulk-parses buffered rows (unbuffered scans ~10% faster on top of 0.2.12's 2.8x).
+- DictCursor builds row dicts at C level.
+- Fix `LOAD DATA LOCAL INFILE` sending (`await` on a non-coroutine) and add write backpressure.
+- Build Linux aarch64 wheels.
 
 ### 0.2.12
 

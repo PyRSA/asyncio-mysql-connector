@@ -131,7 +131,7 @@ class Pool(asyncio.AbstractServer):
         n = 0
         while n < free_size:
             conn = self._free[-1]
-            if conn._reader.at_eof() or conn._reader.exception():
+            if conn._stream_broken:
                 self._free.pop()
                 conn.close()
 

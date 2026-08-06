@@ -94,19 +94,21 @@ cdef tuple _parse_row(const unsigned char *p, Py_ssize_t size, tuple converters)
     return row
 
 
-def parse_rows_from_buffer(bytearray buf, Py_ssize_t pos, tuple converters,
-                           unsigned int seq_id, list rows):
-    """Parse as many complete row packets as available in ``buf`` starting at ``pos``.
+def parse_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
+                           tuple converters, unsigned int seq_id, list rows):
+    """Parse as many complete row packets as available in ``buf[pos:buf_len]``.
 
     Stops (without consuming) at the first packet that is incomplete, has a
     wrong sequence id, is an ERROR/EOF packet, is empty, or spans multiple
     wire packets (16MB). Parsed rows are appended to ``rows``.
 
+    ``buf_len`` is the number of valid bytes (the bytearray's capacity may be
+    larger when it is used as a receive buffer).
+
     Returns ``(new_pos, new_seq_id)``.
     """
     cdef:
         const unsigned char *base = <const unsigned char *> PyByteArray_AS_STRING(buf)
-        Py_ssize_t buf_len = PyByteArray_GET_SIZE(buf)
         Py_ssize_t payload_len
         unsigned int first
 
@@ -324,12 +326,11 @@ cdef tuple _parse_binary_row(const unsigned char *p, Py_ssize_t size, tuple cols
     return row
 
 
-def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, tuple colspecs,
-                                  unsigned int seq_id, list rows):
+def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
+                                  tuple colspecs, unsigned int seq_id, list rows):
     """Binary-protocol counterpart of parse_rows_from_buffer."""
     cdef:
         const unsigned char *base = <const unsigned char *> PyByteArray_AS_STRING(buf)
-        Py_ssize_t buf_len = PyByteArray_GET_SIZE(buf)
         Py_ssize_t payload_len
         unsigned int first
 
@@ -350,6 +351,36 @@ def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, tuple colspecs,
         pos += 4 + payload_len
         seq_id = (seq_id + 1) & 0xFF
     return pos, seq_id
+
+
+def skip_packets_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
+                             unsigned int seq_id, Py_ssize_t count):
+    """Skip up to ``count`` complete packets without materializing them.
+
+    Stops early at an incomplete packet, a sequence mismatch, a jumbo packet
+    or an error packet (which the caller reads via read_packet to raise).
+
+    Returns ``(new_pos, new_seq_id, skipped)``.
+    """
+    cdef:
+        const unsigned char *base = <const unsigned char *> PyByteArray_AS_STRING(buf)
+        Py_ssize_t payload_len
+        Py_ssize_t skipped = 0
+
+    while skipped < count and buf_len - pos >= 4:
+        payload_len = <Py_ssize_t> (base[pos] | (base[pos + 1] << 8) | (base[pos + 2] << 16))
+        if base[pos + 3] != seq_id:
+            break
+        if payload_len == 0xFFFFFF:
+            break
+        if buf_len - pos - 4 < payload_len:
+            break
+        if payload_len and base[pos + 4] == 0xFF:
+            break  # error packet: let read_packet() raise properly
+        pos += 4 + payload_len
+        seq_id = (seq_id + 1) & 0xFF
+        skipped += 1
+    return pos, seq_id, skipped
 
 
 cdef inline void _write_lenenc(bytearray out, Py_ssize_t n):
