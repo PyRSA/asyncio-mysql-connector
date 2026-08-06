@@ -20,14 +20,17 @@ from asyncmy.cursors import Cursor
 from asyncmy.optionfile import Parser
 from asyncmy.protocol import (EOFPacketWrapper, FieldDescriptorPacket,
                               LoadLocalPacketWrapper, MysqlPacket,
-                              OKPacketWrapper, parse_rows_from_buffer)
+                              OKPacketWrapper, pack_binary_params,
+                              parse_binary_rows_from_buffer,
+                              parse_rows_from_buffer)
 
 from .constants.CLIENT import (CAPABILITIES, CONNECT_ATTRS, CONNECT_WITH_DB,
                                LOCAL_FILES, MULTI_RESULTS, MULTI_STATEMENTS,
                                PLUGIN_AUTH, PLUGIN_AUTH_LENENC_CLIENT_DATA,
                                SECURE_CONNECTION, SSL)
 from .constants.COMMAND import (COM_INIT_DB, COM_PING, COM_PROCESS_KILL,
-                                COM_QUERY, COM_QUIT)
+                                COM_QUERY, COM_QUIT, COM_STMT_CLOSE,
+                                COM_STMT_EXECUTE, COM_STMT_PREPARE)
 from .constants.CR import (CR_COMMANDS_OUT_OF_SYNC, CR_CONN_HOST_ERROR,
                            CR_SERVER_LOST)
 from .constants.ER import FILE_NOT_FOUND
@@ -534,6 +537,35 @@ class Connection:
     async def next_result(self, unbuffered=False):
         await self._read_query_result(unbuffered=unbuffered)
         return self._affected_rows
+
+    async def prepare(self, query):
+        """Create a server-side prepared statement (binary protocol).
+
+        Returns a :class:`PreparedStatement`. Executing it skips client-side
+        escaping entirely and reads results in the binary protocol, which is
+        significantly faster for repeated (point) queries.
+
+        :param query: SQL with ``?`` placeholders (native MySQL syntax).
+        """
+        if isinstance(query, str):
+            query = query.encode(self._encoding)
+        await self._execute_command(COM_STMT_PREPARE, query)
+        # COM_STMT_PREPARE response:
+        # https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_stmt_prepare.html
+        pkt = await self.read_packet()
+        pkt.read_uint8()  # status: 0x00
+        statement_id = pkt.read_uint32()
+        num_columns = pkt.read_uint16()
+        num_params = pkt.read_uint16()
+        for _ in range(num_params):
+            await self.read_packet()  # parameter definitions (unused)
+        if num_params:
+            await self.read_packet()  # EOF
+        for _ in range(num_columns):
+            await self.read_packet()  # column definitions (re-read on execute)
+        if num_columns:
+            await self.read_packet()  # EOF
+        return PreparedStatement(self, statement_id, num_params)
 
     def affected_rows(self):
         return self._affected_rows
@@ -1140,6 +1172,81 @@ class Connection:
     NotSupportedError = errors.NotSupportedError
 
 
+class PreparedStatement:
+    """A server-side prepared statement (binary protocol).
+
+    Created via :meth:`Connection.prepare`. Parameters are sent in binary form
+    (no client-side escaping) and result rows are parsed from the binary
+    protocol (no text parsing for numeric/temporal columns).
+
+    Notes:
+    - placeholders use native MySQL ``?`` syntax, not ``%s``;
+    - custom ``conv`` decoders apply only to string-typed columns; numeric and
+      temporal columns decode natively;
+    - only the first result set is returned (extra sets are drained).
+    """
+
+    def __init__(self, connection, statement_id, parameter_count):
+        self._connection = connection
+        self._statement_id = statement_id
+        self._parameter_count = parameter_count
+        self._closed = False
+
+    @property
+    def parameter_count(self):
+        return self._parameter_count
+
+    async def execute(self, args=()):
+        """Execute with ``args`` bound to the statement's ``?`` placeholders.
+
+        Returns the result object: ``result.rows`` (tuple of row tuples, None
+        for non-SELECT), ``result.affected_rows``, ``result.insert_id``,
+        ``result.description``.
+        """
+        conn = self._connection
+        if self._closed or conn is None:
+            raise errors.ProgrammingError("Prepared statement is closed")
+        if not isinstance(args, (tuple, list)):
+            args = (args,)
+        if len(args) != self._parameter_count:
+            raise errors.ProgrammingError(
+                "Expected %d parameters, got %d" % (self._parameter_count, len(args))
+            )
+        payload = I.pack(self._statement_id) + b"\x00" + I.pack(1)
+        if self._parameter_count:
+            payload += pack_binary_params(tuple(args), conn._encoding)
+        await conn._execute_command(COM_STMT_EXECUTE, payload)
+        result = MySQLResult(conn)
+        await result.read_binary()
+        has_next = result.has_next
+        while has_next:  # drain extra result sets (e.g. from stored procedures)
+            extra = MySQLResult(conn)
+            await extra.read_binary()
+            has_next = extra.has_next
+        result.has_next = False
+        conn._result = result
+        conn._affected_rows = result.affected_rows
+        if result.server_status != 0:
+            conn.server_status = result.server_status
+        return result
+
+    async def close(self):
+        """Deallocate the statement on the server (no server response)."""
+        if self._closed:
+            return
+        self._closed = True
+        conn = self._connection
+        self._connection = None
+        if conn is not None and conn.connected:
+            await conn._execute_command(COM_STMT_CLOSE, I.pack(self._statement_id))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+
 cdef class MySQLResult:
     cdef:
         public connection
@@ -1150,6 +1257,7 @@ cdef class MySQLResult:
         public unsigned long long insert_id
         public tuple rows, description
         tuple _row_converters
+        tuple _binary_colspecs
 
     def __init__(self, connection: Connection):
         self.connection = connection
@@ -1180,6 +1288,38 @@ cdef class MySQLResult:
                 await self._read_result_packet(first_packet)
         finally:
             self.connection = None
+
+    async def read_binary(self):
+        """Read a COM_STMT_EXECUTE response (binary protocol result set)."""
+        try:
+            first_packet = await self.connection.read_packet()
+            if first_packet.is_ok_packet():
+                self._read_ok_packet(first_packet)
+            else:
+                self.field_count = first_packet.read_length_encoded_integer()
+                await self._get_descriptions()
+                await self._read_binary_rowdata_packet()
+        finally:
+            self.connection = None
+
+    async def _read_binary_rowdata_packet(self):
+        cdef list rows = []
+        cdef tuple specs = self._binary_colspecs
+        conn = self.connection
+        while True:
+            new_pos, new_seq = parse_binary_rows_from_buffer(
+                conn._buffer, conn._buf_pos, specs, conn._next_seq_id, rows
+            )
+            conn._buf_pos = new_pos
+            conn._next_seq_id = new_seq
+            packet = await conn.read_packet()
+            if self._check_packet_is_eof(packet):
+                self.connection = None
+                break
+            rows.append(packet.read_binary_row(specs))
+
+        self.affected_rows = len(rows)
+        self.rows = tuple(rows)
 
     async def init_unbuffered_query(self):
         """
@@ -1309,6 +1449,7 @@ cdef class MySQLResult:
         """Read a column descriptor packet for each column in the result."""
         self.fields = []
         self.converters = []
+        cdef list binary_specs = []
         use_unicode = self.connection._use_unicode
         conn_encoding = self.connection._encoding
         description = []
@@ -1353,8 +1494,12 @@ cdef class MySQLResult:
             else:
                 code = 3
             self.converters.append((code, encoding, converter))
+            binary_specs.append(
+                (field_type, bool(field.flags & 32), code, encoding, converter)  # 32: UNSIGNED
+            )
 
         self._row_converters = tuple(self.converters)
+        self._binary_colspecs = tuple(binary_specs)
         eof_packet = await self.connection.read_packet()
         assert eof_packet.is_eof_packet(), "Protocol error, expecting EOF"
         self.description = tuple(description)

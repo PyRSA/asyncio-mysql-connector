@@ -11,6 +11,7 @@
 
 - 🚀 **Fastest in every benchmark** — reads large result sets 2.1x faster than `mysqlclient` and 5x faster than `aiomysql`/`pymysql` ([details](./benchmark/README.md))
 - 🔌 **Drop-in aiomysql replacement** — same API, same cursors (`DictCursor`, `SSCursor`), same pool semantics
+- 🧬 **Server-side prepared statements** (binary protocol) via `conn.prepare()` — no client-side escaping, no text parsing; large scans another ~35% faster than the text protocol
 - ⚡ **C-speed protocol core** — rows are parsed in bulk from the receive buffer in a single C loop, values decode straight from wire bytes via the CPython C-API
 - 🏊 **Built-in connection pool** — `asyncmy.create_pool()`, no extra dependency, 2x aiomysql's pooled throughput
 - 📡 **MySQL replication protocol** over asyncio ([BinLogStream](https://github.com/long2ice/asyncmy/blob/dev/asyncmy/replication/binlogstream.py))
@@ -104,6 +105,24 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+### Prepared statements (binary protocol)
+
+For repeated queries, server-side prepared statements skip client-side escaping
+entirely and read results in MySQL's binary protocol — numeric and temporal
+columns decode natively with no text parsing. Placeholders use native `?` syntax.
+
+```py
+stmt = await conn.prepare("SELECT id, name FROM users WHERE id = ?")
+result = await stmt.execute((42,))
+print(result.rows)           # tuple of row tuples
+print(result.affected_rows)  # for INSERT/UPDATE/DELETE
+await stmt.close()
+
+# or as a context manager
+async with await conn.prepare("SELECT ? + ?") as stmt:
+    result = await stmt.execute((1, 2))
 ```
 
 ### Pool

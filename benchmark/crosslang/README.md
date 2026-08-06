@@ -9,20 +9,21 @@ scanning into raw strings).
 
 Apple M4 Max, MySQL 9.7.1 on localhost, warmup + best-of-N:
 
-| Scenario | Go (go-sql-driver v1.10) | asyncmy (Python) | Rust (mysql_async 0.36) |
-| --- | --- | --- | --- |
-| 50k-row mixed-type full scan | **0.032s** | 0.036s | 0.048s |
-| Pooled 20×200 point queries | 0.076s | 0.093s | **0.048s** |
+| Scenario | Go (go-sql-driver v1.10) | asyncmy text | asyncmy binary (`conn.prepare`) | Rust (mysql_async 0.36) |
+| --- | --- | --- | --- | --- |
+| 50k-row mixed-type full scan | 0.032s | 0.036s | **0.024s** | 0.048s |
+| Pooled 20×200 point queries | 0.076s | 0.093s (0.072s with uvloop) | 0.084s (**0.063s** with uvloop) | **0.048s** |
 
 Takeaways:
 
-- On large scans asyncmy sits between the native drivers: ~12% behind
-  go-sql-driver and ~25% **ahead** of mysql_async. The parsing path is C in all
-  three; the remaining gap vs Go is the cost of materializing PyObjects.
-- On point-query throughput Go and Rust benefit from prepared statements +
-  the binary protocol (statement cache, no escaping, no text parsing), which
-  asyncmy's text-protocol path doesn't use yet — that is a protocol
-  difference more than a language difference.
+- With the binary protocol (server-side prepared statements, added in 0.2.13)
+  asyncmy's large scan is the **fastest of the three languages** — integers
+  arrive as little-endian bytes and datetimes as packed fields, so text
+  parsing disappears entirely.
+- Even the text-protocol scan sits between the native drivers: ~12% behind
+  go-sql-driver and ~25% ahead of mysql_async.
+- On point-query throughput Rust still leads; the remaining asyncmy gap is
+  event-loop scheduling cost (uvloop closes much of it), not protocol parsing.
 
 ## Fairness notes
 

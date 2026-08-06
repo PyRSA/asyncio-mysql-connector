@@ -1,18 +1,23 @@
 # cython: boundscheck=False, wraparound=False, cdivision=True, initializedcheck=False
 
+from cpython cimport datetime
 from cpython.bytearray cimport PyByteArray_AS_STRING, PyByteArray_GET_SIZE
 from cpython.bytes cimport (PyBytes_AS_STRING, PyBytes_FromStringAndSize,
                             PyBytes_GET_SIZE)
 from cpython.ref cimport Py_INCREF
 from cpython.tuple cimport PyTuple_New, PyTuple_SET_ITEM
 from cpython.unicode cimport PyUnicode_DecodeASCII, PyUnicode_DecodeUTF8
-from libc.string cimport memchr
+from libc.string cimport memchr, memcpy
+
+from decimal import Decimal
 
 from .constants.FIELD_TYPE import VAR_STRING
 from .constants.SERVER_STATUS import SERVER_MORE_RESULTS_EXISTS
 
 include "charset.pxd"
 from . import errors, structs
+
+datetime.import_datetime()
 
 # Length-coded integer markers
 # NULL_COLUMN = 251, UNSIGNED_CHAR_COLUMN = 251, UNSIGNED_SHORT_COLUMN = 252,
@@ -122,6 +127,404 @@ def parse_rows_from_buffer(bytearray buf, Py_ssize_t pos, tuple converters,
         pos += 4 + payload_len
         seq_id = (seq_id + 1) & 0xFF
     return pos, seq_id
+
+
+cdef tuple _parse_binary_row(const unsigned char *p, Py_ssize_t size, tuple colspecs):
+    """Parse one binary-protocol row from raw memory.
+
+    ``p`` points at the packet payload: [0x00 header][NULL bitmap][values...].
+    ``colspecs`` holds one ``(type_code, is_unsigned, code, encoding, converter)``
+    tuple per column, where code/encoding/converter follow the text-row rules
+    and apply only to length-encoded (string-ish) values.
+
+    Assumes a little-endian host (as does the rest of the wire parsing).
+    """
+    cdef:
+        Py_ssize_t n = len(colspecs)
+        Py_ssize_t bitmap_len = (n + 9) >> 3
+        Py_ssize_t pos = 1 + bitmap_len
+        const unsigned char *bitmap = p + 1
+        Py_ssize_t i, length
+        unsigned int c, u32
+        unsigned long long u64
+        int type_code, code, L
+        int year, month, day, hour, minute, second
+        long usec, days, secs
+        float fv
+        double dv
+        tuple row = PyTuple_New(n)
+        tuple spec
+        object value, converter
+
+    if size < pos:
+        raise errors.InternalError("Truncated binary row packet")
+
+    for i in range(n):
+        if bitmap[(i + 2) >> 3] & (1 << ((i + 2) & 7)):
+            Py_INCREF(None)
+            PyTuple_SET_ITEM(row, i, None)
+            continue
+        spec = <tuple> colspecs[i]
+        type_code = <int> spec[0]
+
+        if type_code == 3 or type_code == 9:  # LONG, INT24 (both 4 bytes)
+            if pos + 4 > size:
+                raise errors.InternalError("Truncated binary row packet")
+            u32 = p[pos] | (p[pos + 1] << 8) | (p[pos + 2] << 16) | (<unsigned int> p[pos + 3] << 24)
+            value = u32 if <bint> spec[1] else <int> u32
+            pos += 4
+        elif type_code == 8:  # LONGLONG
+            if pos + 8 > size:
+                raise errors.InternalError("Truncated binary row packet")
+            u64 = (
+                <unsigned long long> p[pos]
+                | (<unsigned long long> p[pos + 1] << 8)
+                | (<unsigned long long> p[pos + 2] << 16)
+                | (<unsigned long long> p[pos + 3] << 24)
+                | (<unsigned long long> p[pos + 4] << 32)
+                | (<unsigned long long> p[pos + 5] << 40)
+                | (<unsigned long long> p[pos + 6] << 48)
+                | (<unsigned long long> p[pos + 7] << 56)
+            )
+            value = u64 if <bint> spec[1] else <long long> u64
+            pos += 8
+        elif type_code == 1:  # TINY
+            value = <unsigned int> p[pos] if <bint> spec[1] else <int> (<signed char> p[pos])
+            pos += 1
+        elif type_code == 2 or type_code == 13:  # SHORT, YEAR
+            c = p[pos] | (p[pos + 1] << 8)
+            value = c if (<bint> spec[1] or type_code == 13) else <int> (<short> c)
+            pos += 2
+        elif type_code == 5:  # DOUBLE
+            if pos + 8 > size:
+                raise errors.InternalError("Truncated binary row packet")
+            memcpy(&dv, p + pos, 8)
+            value = dv
+            pos += 8
+        elif type_code == 4:  # FLOAT
+            memcpy(&fv, p + pos, 4)
+            value = <double> fv
+            pos += 4
+        elif type_code == 7 or type_code == 12:  # TIMESTAMP, DATETIME
+            L = p[pos]
+            pos += 1
+            if L == 0:
+                value = None
+            else:
+                if pos + L > size:
+                    raise errors.InternalError("Truncated binary row packet")
+                year = p[pos] | (p[pos + 1] << 8)
+                month = p[pos + 2]
+                day = p[pos + 3]
+                if L >= 7:
+                    hour = p[pos + 4]
+                    minute = p[pos + 5]
+                    second = p[pos + 6]
+                else:
+                    hour = minute = second = 0
+                if L >= 11:
+                    usec = (
+                        p[pos + 7] | (p[pos + 8] << 8)
+                        | (p[pos + 9] << 16) | (<long> p[pos + 10] << 24)
+                    )
+                else:
+                    usec = 0
+                if year >= 1 and 1 <= month <= 12 and 1 <= day <= 31:
+                    value = datetime.datetime_new(year, month, day, hour, minute, second, usec, None)
+                else:
+                    value = None
+                pos += L
+        elif type_code == 10 or type_code == 14:  # DATE, NEWDATE
+            L = p[pos]
+            pos += 1
+            if L == 0:
+                value = None
+            else:
+                if pos + L > size:
+                    raise errors.InternalError("Truncated binary row packet")
+                year = p[pos] | (p[pos + 1] << 8)
+                month = p[pos + 2]
+                day = p[pos + 3]
+                if year >= 1 and 1 <= month <= 12 and 1 <= day <= 31:
+                    value = datetime.date_new(year, month, day)
+                else:
+                    value = None
+                pos += L
+        elif type_code == 11:  # TIME
+            L = p[pos]
+            pos += 1
+            if L == 0:
+                value = datetime.timedelta_new(0, 0, 0)
+            else:
+                if pos + L > size:
+                    raise errors.InternalError("Truncated binary row packet")
+                days = (
+                    p[pos + 1] | (p[pos + 2] << 8)
+                    | (p[pos + 3] << 16) | (<long> p[pos + 4] << 24)
+                )
+                secs = p[pos + 5] * 3600 + p[pos + 6] * 60 + p[pos + 7]
+                if L >= 12:
+                    usec = (
+                        p[pos + 8] | (p[pos + 9] << 8)
+                        | (p[pos + 10] << 16) | (<long> p[pos + 11] << 24)
+                    )
+                else:
+                    usec = 0
+                if p[pos]:  # negative
+                    value = datetime.timedelta_new(-days, -secs, -usec)
+                else:
+                    value = datetime.timedelta_new(days, secs, usec)
+                pos += L
+        else:
+            # Length-encoded value: strings, blobs, decimals, JSON, BIT, ...
+            if pos >= size:
+                raise errors.InternalError("Truncated binary row packet")
+            c = p[pos]
+            pos += 1
+            if c < 251:
+                length = <Py_ssize_t> c
+            elif c == 252:
+                length = <Py_ssize_t> (p[pos] | (p[pos + 1] << 8))
+                pos += 2
+            elif c == 253:
+                length = <Py_ssize_t> (p[pos] | (p[pos + 1] << 8) | (p[pos + 2] << 16))
+                pos += 3
+            elif c == 254:
+                length = <Py_ssize_t> (
+                    <unsigned long long> p[pos]
+                    | (<unsigned long long> p[pos + 1] << 8)
+                    | (<unsigned long long> p[pos + 2] << 16)
+                    | (<unsigned long long> p[pos + 3] << 24)
+                    | (<unsigned long long> p[pos + 4] << 32)
+                    | (<unsigned long long> p[pos + 5] << 40)
+                    | (<unsigned long long> p[pos + 6] << 48)
+                    | (<unsigned long long> p[pos + 7] << 56)
+                )
+                pos += 8
+            else:
+                raise errors.InternalError("Invalid length encoded integer in binary row")
+            if pos + length > size:
+                raise errors.InternalError("Truncated binary row packet")
+            code = <int> spec[2]
+            if code == 0:
+                value = PyBytes_FromStringAndSize(<const char *> (p + pos), length)
+            elif code == 1:
+                value = PyUnicode_DecodeUTF8(<const char *> (p + pos), length, NULL)
+            elif code == 2:
+                value = PyUnicode_DecodeASCII(<const char *> (p + pos), length, NULL)
+            else:
+                value = PyBytes_FromStringAndSize(<const char *> (p + pos), length).decode(<str> spec[3])
+            pos += length
+            converter = spec[4]
+            if converter is not None:
+                value = converter(value)
+
+        Py_INCREF(value)
+        PyTuple_SET_ITEM(row, i, value)
+    return row
+
+
+def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, tuple colspecs,
+                                  unsigned int seq_id, list rows):
+    """Binary-protocol counterpart of parse_rows_from_buffer."""
+    cdef:
+        const unsigned char *base = <const unsigned char *> PyByteArray_AS_STRING(buf)
+        Py_ssize_t buf_len = PyByteArray_GET_SIZE(buf)
+        Py_ssize_t payload_len
+        unsigned int first
+
+    while buf_len - pos >= 4:
+        payload_len = <Py_ssize_t> (base[pos] | (base[pos + 1] << 8) | (base[pos + 2] << 16))
+        if base[pos + 3] != seq_id:
+            break
+        if payload_len == 0 or payload_len == 0xFFFFFF:
+            break
+        if buf_len - pos - 4 < payload_len:
+            break
+        first = base[pos + 4]
+        if first == 0xFF:
+            break  # error packet
+        if first == 0xFE and payload_len < 9:
+            break  # EOF packet
+        rows.append(_parse_binary_row(base + pos + 4, payload_len, colspecs))
+        pos += 4 + payload_len
+        seq_id = (seq_id + 1) & 0xFF
+    return pos, seq_id
+
+
+cdef inline void _write_lenenc(bytearray out, Py_ssize_t n):
+    if n < 251:
+        out.append(n)
+    elif n < (1 << 16):
+        out.append(0xFC)
+        out.append(n & 0xFF)
+        out.append((n >> 8) & 0xFF)
+    elif n < (1 << 24):
+        out.append(0xFD)
+        out.append(n & 0xFF)
+        out.append((n >> 8) & 0xFF)
+        out.append((n >> 16) & 0xFF)
+    else:
+        out.append(0xFE)
+        out.append(n & 0xFF)
+        out.append((n >> 8) & 0xFF)
+        out.append((n >> 16) & 0xFF)
+        out.append((n >> 24) & 0xFF)
+        out.append((n >> 32) & 0xFF)
+        out.append((n >> 40) & 0xFF)
+        out.append((n >> 48) & 0xFF)
+        out.append((n >> 56) & 0xFF)
+
+
+cdef inline void _write_u32(bytearray out, unsigned long v):
+    out.append(v & 0xFF)
+    out.append((v >> 8) & 0xFF)
+    out.append((v >> 16) & 0xFF)
+    out.append((v >> 24) & 0xFF)
+
+
+cdef inline void _write_u64(bytearray out, unsigned long long v):
+    out.append(v & 0xFF)
+    out.append((v >> 8) & 0xFF)
+    out.append((v >> 16) & 0xFF)
+    out.append((v >> 24) & 0xFF)
+    out.append((v >> 32) & 0xFF)
+    out.append((v >> 40) & 0xFF)
+    out.append((v >> 48) & 0xFF)
+    out.append((v >> 56) & 0xFF)
+
+
+cpdef bytes pack_binary_params(tuple args, str encoding):
+    """Serialize COM_STMT_EXECUTE parameters.
+
+    Returns null_bitmap + new_params_bound_flag(1) + types + values.
+    """
+    cdef:
+        Py_ssize_t n = len(args)
+        bytearray bitmap = bytearray((n + 7) >> 3)
+        bytearray types = bytearray()
+        bytearray values = bytearray()
+        Py_ssize_t i
+        object v
+        long long i64v
+        unsigned long long u64v
+        double dv
+        long days, secs
+        long usec
+        unsigned char tmp[8]
+        bytes encoded
+
+    for i in range(n):
+        v = args[i]
+        if v is None:
+            bitmap[i >> 3] |= 1 << (i & 7)
+            types.append(6)  # MYSQL_TYPE_NULL
+            types.append(0)
+        elif isinstance(v, bool):
+            types.append(1)  # MYSQL_TYPE_TINY
+            types.append(0)
+            values.append(1 if v else 0)
+        elif isinstance(v, int):
+            if -9223372036854775808 <= v <= 9223372036854775807:
+                types.append(8)  # MYSQL_TYPE_LONGLONG
+                types.append(0)
+                i64v = v
+                _write_u64(values, <unsigned long long> i64v)
+            elif 0 < v <= 18446744073709551615:
+                types.append(8)
+                types.append(0x80)  # unsigned flag
+                u64v = v
+                _write_u64(values, u64v)
+            else:
+                raise ValueError("int parameter out of 64-bit range for MySQL: %r" % (v,))
+        elif isinstance(v, float):
+            types.append(5)  # MYSQL_TYPE_DOUBLE
+            types.append(0)
+            dv = v
+            memcpy(tmp, &dv, 8)
+            values += tmp[:8]
+        elif isinstance(v, str):
+            types.append(253)  # MYSQL_TYPE_VAR_STRING
+            types.append(0)
+            encoded = (<str> v).encode(encoding)
+            _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+            values += encoded
+        elif isinstance(v, (bytes, bytearray)):
+            types.append(252)  # MYSQL_TYPE_BLOB
+            types.append(0)
+            encoded = bytes(v)
+            _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+            values += encoded
+        elif datetime.PyDateTime_Check(v):
+            types.append(12)  # MYSQL_TYPE_DATETIME
+            types.append(0)
+            values.append(11)
+            values.append(datetime.PyDateTime_GET_YEAR(v) & 0xFF)
+            values.append((datetime.PyDateTime_GET_YEAR(v) >> 8) & 0xFF)
+            values.append(datetime.PyDateTime_GET_MONTH(v))
+            values.append(datetime.PyDateTime_GET_DAY(v))
+            values.append(datetime.PyDateTime_DATE_GET_HOUR(v))
+            values.append(datetime.PyDateTime_DATE_GET_MINUTE(v))
+            values.append(datetime.PyDateTime_DATE_GET_SECOND(v))
+            _write_u32(values, datetime.PyDateTime_DATE_GET_MICROSECOND(v))
+        elif datetime.PyDate_Check(v):
+            types.append(10)  # MYSQL_TYPE_DATE
+            types.append(0)
+            values.append(4)
+            values.append(datetime.PyDateTime_GET_YEAR(v) & 0xFF)
+            values.append((datetime.PyDateTime_GET_YEAR(v) >> 8) & 0xFF)
+            values.append(datetime.PyDateTime_GET_MONTH(v))
+            values.append(datetime.PyDateTime_GET_DAY(v))
+        elif datetime.PyDelta_Check(v):
+            types.append(11)  # MYSQL_TYPE_TIME
+            types.append(0)
+            days = datetime.PyDateTime_DELTA_GET_DAYS(v)
+            secs = datetime.PyDateTime_DELTA_GET_SECONDS(v)
+            usec = datetime.PyDateTime_DELTA_GET_MICROSECONDS(v)
+            values.append(12)
+            if days < 0:
+                # normalize to positive components with a sign byte
+                if secs or usec:
+                    days = -days - 1
+                    secs = 86400 - secs
+                    if usec:
+                        secs -= 1
+                        usec = 1000000 - usec
+                else:
+                    days = -days
+                values.append(1)
+            else:
+                values.append(0)
+            _write_u32(values, days)
+            values.append(secs // 3600)
+            values.append((secs % 3600) // 60)
+            values.append(secs % 60)
+            _write_u32(values, usec)
+        elif datetime.PyTime_Check(v):
+            types.append(11)  # MYSQL_TYPE_TIME
+            types.append(0)
+            values.append(12)
+            values.append(0)
+            _write_u32(values, 0)
+            values.append(datetime.PyDateTime_TIME_GET_HOUR(v))
+            values.append(datetime.PyDateTime_TIME_GET_MINUTE(v))
+            values.append(datetime.PyDateTime_TIME_GET_SECOND(v))
+            _write_u32(values, datetime.PyDateTime_TIME_GET_MICROSECOND(v))
+        elif isinstance(v, Decimal):
+            types.append(246)  # MYSQL_TYPE_NEWDECIMAL
+            types.append(0)
+            encoded = format(v, "f").encode("ascii")
+            _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+            values += encoded
+        else:
+            # Fallback: stringify, mirroring the text protocol's default encoder
+            types.append(253)
+            types.append(0)
+            encoded = str(v).encode(encoding)
+            _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+            values += encoded
+
+    return bytes(bitmap) + b"\x01" + bytes(types) + bytes(values)
 
 
 cdef class MysqlPacket:
@@ -308,6 +711,12 @@ cdef class MysqlPacket:
         cdef tuple row = _parse_row(
             self._ptr + self._position, self._size - self._position, converters
         )
+        self._position = self._size
+        return row
+
+    cpdef tuple read_binary_row(self, tuple colspecs):
+        """Parse the whole packet as one binary-protocol result row."""
+        cdef tuple row = _parse_binary_row(self._ptr, self._size, colspecs)
         self._position = self._size
         return row
 

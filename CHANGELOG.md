@@ -2,6 +2,14 @@
 
 ## 0.2
 
+### 0.2.13
+
+- Add server-side prepared statements (binary protocol): `stmt = await conn.prepare(sql)`,
+  `await stmt.execute(args)`. Parameters are sent in binary form (no client-side escaping)
+  and results are parsed from the binary protocol — no text parsing for numeric/temporal
+  columns. Large scans are ~35% faster than the text protocol; on the cross-language
+  benchmark asyncmy's binary scan is now the fastest, ahead of go-sql-driver and mysql_async.
+
 ### 0.2.12
 
 - Major performance improvement: buffered packet reading, C-level bulk row parsing,
