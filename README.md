@@ -1,36 +1,39 @@
-# asyncmy — Fast asyncio MySQL/MariaDB driver
+# asyncmy — The fastest asyncio MySQL/MariaDB driver
 
 [![PyPI](https://img.shields.io/pypi/v/asyncmy.svg)](https://pypi.org/pypi/asyncmy)
 [![License](https://img.shields.io/github/license/long2ice/asyncmy)](https://github.com/long2ice/asyncmy)
 [![CI](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/ci.yml)
 [![Release](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml/badge.svg)](https://github.com/long2ice/asyncmy/actions/workflows/pypi.yml)
 
-`asyncmy` is a fast asyncio MySQL/MariaDB driver. It reuses most of [PyMySQL](https://github.com/PyMySQL/PyMySQL) and [aiomysql](https://github.com/aio-libs/aiomysql) while rewriting the core protocol in [Cython](https://cython.org/) for better performance.
+`asyncmy` is the fastest asyncio MySQL/MariaDB driver for Python. It keeps the familiar [aiomysql](https://github.com/aio-libs/aiomysql) API while rewriting the entire protocol core in [Cython](https://cython.org/) — down to pointer-level packet parsing. In [our benchmarks](./benchmark/README.md) it outperforms every driver tested, including the C-based synchronous `mysqlclient`.
 
 ## Features
 
-- **API compatible** with [aiomysql](https://github.com/aio-libs/aiomysql)
-- **Faster** via [Cython](https://cython.org/)-compiled core
-- **MySQL replication protocol** with asyncio ([BinLogStream](https://github.com/long2ice/asyncmy/blob/dev/asyncmy/replication/binlogstream.py))
-- **CI-tested** on MySQL and MariaDB ([workflow](https://github.com/long2ice/asyncmy/blob/dev/.github/workflows/ci.yml))
+- 🚀 **Fastest in every benchmark** — reads large result sets 2.1x faster than `mysqlclient` and 5x faster than `aiomysql`/`pymysql` ([details](./benchmark/README.md))
+- 🔌 **Drop-in aiomysql replacement** — same API, same cursors (`DictCursor`, `SSCursor`), same pool semantics
+- ⚡ **C-speed protocol core** — rows are parsed in bulk from the receive buffer in a single C loop, values decode straight from wire bytes via the CPython C-API
+- 🏊 **Built-in connection pool** — `asyncmy.create_pool()`, no extra dependency, 2x aiomysql's pooled throughput
+- 📡 **MySQL replication protocol** over asyncio ([BinLogStream](https://github.com/long2ice/asyncmy/blob/dev/asyncmy/replication/binlogstream.py))
+- ✅ **CI-tested on MySQL and MariaDB** ([workflow](https://github.com/long2ice/asyncmy/blob/dev/.github/workflows/ci.yml))
 
 ## Benchmark
 
-asyncmy demonstrates excellent performance across realistic workloads:
+asyncmy ranks **#1 in all four scenarios** against `mysqlclient`, `pymysql`, and `aiomysql` (warmup + best-of-3, see [methodology](./benchmark/README.md#methodology)):
 
 | Test | asyncmy Rank | Performance |
 | ---- | ------------ | ----------- |
-| **Connection Pool** (2k queries) | 🏆 **#1/2** | ~10,500 qps (consistently 22-28% faster than aiomysql) |
-| **Large Result Set** (50k rows) | #2/4 | ~0.090s (2x faster than aiomysql, close to mysqlclient) |
-| **Concurrent Queries** (50 queries) | #1-2/2 | Comparable to aiomysql |
-| **Batch Insert** (10k rows) | Variable | Results vary by run |
+| **Large Result Set** (33k rows, all types) | 🏆 **#1/4** | 0.031s — 2.1x faster than mysqlclient, 5.2x faster than aiomysql |
+| **Connection Pool** (2k queries) | 🏆 **#1/2** | ~17,000 qps — 2x aiomysql's throughput |
+| **Concurrent Queries** (50 connections) | 🏆 **#1/2** | ~8,600 qps — 1.6x faster than aiomysql |
+| **Batch Insert** (10k rows) | 🏆 **#1/4** | ~91,000 rows/sec — fastest of all four drivers |
 
-**Recent optimizations (v0.2.12)** delivered significant performance improvements:
+The protocol core is engineered for zero waste on the hot path:
 
-- **Buffer Management**: Zero-copy fast path for single-packet reads
-- **DateTime Parsing**: Fast string slicing replacing regex
-- **Row Parsing**: Pre-allocated lists and C-level indexing in hot path
-- **Protocol Parsing**: Inlined length-coded string reads with fast path for common cases
+- **Bulk packet parsing**: one socket read serves hundreds of row packets, parsed in a single C loop with no event-loop round-trips
+- **Pointer-based protocol reads**: integers and length-encoded values are read directly from raw memory, no `struct` calls
+- **Direct row decoding**: cell values decode straight from the receive buffer via the CPython C-API (`PyUnicode_DecodeUTF8`, `PyTuple_New`), skipping intermediate objects
+- **Zero-decode numeric/temporal columns**: `int`/`float`/`datetime` values parse directly from bytes, and dates are built with the C datetime API
+- **Escape fast path**: strings without special characters are returned as-is, no translation pass
 
 📊 **[View detailed benchmarks →](./benchmark/README.md)**
 

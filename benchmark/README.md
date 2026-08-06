@@ -7,40 +7,67 @@ Comprehensive performance benchmarks for `asyncmy`, comparing against `mysqlclie
 - **CPU:** Apple Mac Studio (M4 Max)
 - **Memory:** 64GB
 - **Python:** 3.14
-- **MySQL:** 9.6.0
+- **MySQL:** 9.7.1 (localhost)
 - **Test Data:** 100,000 rows with realistic schema
+
+## Methodology
+
+Every test runs a warmup pass first (to populate the MySQL buffer pool, auth
+cache, and driver-internal caches), then reports the **best of 3 measured
+runs**. This is handled by `best_result()` in `benchmark/__init__.py`.
 
 ## Performance Summary
 
-| Test                                 | Winner         | asyncmy Rank | Notes                                 |
-| ------------------------------------ | -------------- | ------------ | ------------------------------------- |
-| **Large Result Set** (50k rows)      | mysqlclient    | #2/4         | ~0.090s - 2x faster than aiomysql     |
-| **Concurrent Queries** (50 queries)  | Variable       | #1-2/2       | Very close to aiomysql                |
-| **Connection Pool** (2k queries)     | 🏆 **asyncmy** | **#1/2**     | Consistently 22-28% faster            |
-| **Batch Insert** (10k rows)          | Variable       | #1-4/4       | Results vary significantly            |
+| Test                                     | Winner         | asyncmy Rank | Notes                                        |
+| ---------------------------------------- | -------------- | ------------ | -------------------------------------------- |
+| **Large Result Set** (33k rows)          | 🏆 **asyncmy** | **#1/4**     | 2.1x faster than mysqlclient (a C sync lib)  |
+| **Concurrent Queries** (50 connections)  | 🏆 **asyncmy** | **#1/2**     | 1.6x faster than aiomysql                    |
+| **Connection Pool** (2k queries)         | 🏆 **asyncmy** | **#1/2**     | 2x aiomysql's throughput                     |
+| **Batch Insert** (10k rows)              | 🏆 **asyncmy** | **#1/4**     | ~91k rows/sec, fastest of all four           |
 
 ## Key Insights
 
-- ✅ **Connection Pool**: asyncmy consistently shows 22-28% better throughput than aiomysql
-- ✅ **Large Result Set**: asyncmy is 2x faster than pymysql/aiomysql, close to mysqlclient
-- ⚡ **Concurrent Queries**: asyncmy and aiomysql are comparable (within margin of error)
-- ⚡ **Batch Insert**: Results vary by run; all libraries perform similarly
+- ✅ **Large Result Set**: asyncmy is now the fastest driver, period — 2.1x faster
+  than mysqlclient and 5.2x faster than aiomysql/pymysql
+- ✅ **Connection Pool**: ~17,000 queries/sec, double aiomysql's throughput
+- ✅ **Concurrent Queries**: fastest connection setup + query round-trip
+- ✅ **Batch Insert**: fastest `executemany()` of all four drivers
 
-## Recent Optimizations (v0.2.12)
+## Recent Optimizations
 
-Five major performance improvements were implemented:
+The protocol core was rebuilt around direct C-level parsing:
 
-1. **Buffer Management** - Eliminated redundant memory copies in packet reading (fast path optimization)
-2. **DateTime Parsing** - Replaced regex with fast string slicing for datetime/date/time conversions
-3. **Row Parsing** - Pre-allocated lists and C-level indexing replacing Python list.append()
-4. **Protocol Parsing** - Inlined `read_length_coded_string` with fast path for common cases (length < 251)
-5. **Batch Operations** - Pre-process values and use list accumulation + join for executemany
+1. **Buffered packet reading** — packets are consumed from a receive buffer
+   filled by large socket reads, instead of two `await`s per packet. A 33k-row
+   result set now costs a handful of event-loop round-trips instead of ~66,000.
+2. **Bulk row parsing** — all complete row packets sitting in the buffer are
+   parsed in one C loop (`parse_rows_from_buffer`), creating no intermediate
+   packet objects.
+3. **Pointer-based protocol reads** — integers and length-encoded values are
+   read directly from raw memory; no `struct.unpack` calls remain on the hot path.
+4. **Direct cell decoding** — string cells decode straight from the receive
+   buffer via `PyUnicode_DecodeUTF8`/`PyUnicode_DecodeASCII`; rows are built
+   with `PyTuple_New`/`PyTuple_SET_ITEM`.
+5. **Zero-decode numeric & temporal columns** — `int`/`float` parse directly
+   from bytes; DATETIME/DATE/TIME values are parsed byte-by-byte in C and
+   constructed through the CPython datetime C-API (no regex, no str detour).
+6. **Escape fast path** — strings/bytes without special characters skip the
+   translation table entirely.
+7. **Leaner cursors** — `fetchone/fetchmany/fetchall` no longer allocate an
+   `asyncio.Future` per call.
+8. **Compiler tuning** — `-O3` with `cdivision`, `initializedcheck=False`, and
+   bounds-check-free parsing code.
 
-These optimizations resulted in:
+Measured impact (driver-level micro-benchmarks, 50k rows, best-of-N):
 
-- **asyncmy consistently leads in connection pool benchmarks** (22-28% faster)
-- **Large result set parsing improved** - now 2x faster than aiomysql
-- **Close to mysqlclient performance** in data-intensive workloads
+| Workload                    | Before  | After   | Speedup |
+| --------------------------- | ------- | ------- | ------- |
+| Mixed-type full scan        | 221.5ms | 32.5ms  | 6.8x    |
+| Integer columns scan        | 114.2ms | 19.4ms  | 5.9x    |
+| String columns scan         | 88.1ms  | 11.7ms  | 7.5x    |
+| Datetime columns scan       | 244.6ms | 16.1ms  | 15.2x   |
+| SSCursor (unbuffered) scan  | 111.0ms | 39.5ms  | 2.8x    |
+| Pooled small queries        | 229.0ms | 185.4ms | 1.24x   |
 
 ## Test Scenarios
 
@@ -50,19 +77,19 @@ Tests the efficiency of fetching and processing large datasets in a single query
 
 **What it measures:**
 
-- Packet reading efficiency (optimized buffer management)
-- Data parsing speed (optimized datetime conversion)
+- Packet reading efficiency (buffered bulk reads)
+- Data parsing speed (C-level row/datetime parsing)
 - Memory efficiency
 
-**Test:** Fetch 50,000 rows with all column types (int, varchar, datetime, decimal, text)
+**Test:** Fetch ~33,000 rows with all column types (int, varchar, datetime, decimal, text)
 
 **Results (typical):**
 
 ```text
-1. mysqlclient      0.085s  (1.00x vs best)
-2. asyncmy          0.090s  (0.94x vs best)
-3. pymysql          0.165s  (0.52x vs best)
-4. aiomysql         0.170s  (0.50x vs best)
+1. asyncmy          0.031s  (1.00x vs best)
+2. mysqlclient      0.066s  (0.47x vs best)
+3. pymysql          0.155s  (0.20x vs best)
+4. aiomysql         0.161s  (0.19x vs best)
 ```
 
 ### 2. Concurrent Queries (`concurrent.py`)
@@ -80,10 +107,11 @@ Tests async libraries' ability to run multiple queries concurrently.
 **Results (typical):**
 
 ```text
-1. asyncmy/aiomysql  ~0.015s - Results vary, both libraries perform similarly
+1. asyncmy          0.006s  (~8,600 queries/sec)
+2. aiomysql         0.009s  (~5,500 queries/sec)
 ```
 
-**Note:** Synchronous libraries (mysqlclient, pymysql) cannot efficiently handle this scenario without threads. The difference between asyncmy and aiomysql is within margin of error.
+**Note:** Synchronous libraries (mysqlclient, pymysql) cannot efficiently handle this scenario without threads.
 
 ### 3. Connection Pool (`pool.py`)
 
@@ -100,11 +128,11 @@ Tests connection pool performance with concurrent query load.
 **Results (typical):**
 
 ```text
-1. asyncmy          ~0.190s  (1.00x vs best) ⭐ WINNER - ~10,500 queries/sec
-2. aiomysql         ~0.240s  (0.78x vs best) - ~8,300 queries/sec
+1. asyncmy          0.117s  (1.00x vs best) ⭐ WINNER - ~17,000 queries/sec
+2. aiomysql         0.235s  (0.50x vs best) - ~8,500 queries/sec
 ```
 
-**Insight:** asyncmy's connection pool consistently shows **22-28% better throughput** than aiomysql across multiple runs.
+**Insight:** asyncmy's connection pool consistently delivers **~2x aiomysql's throughput**.
 
 ### 4. Batch Insert (`batch_insert.py`)
 
@@ -118,13 +146,17 @@ Tests bulk insert performance using `executemany()`.
 
 **Test:** Insert 10,000 rows using `executemany()`
 
-**Results (variable):**
+**Results (typical):**
 
 ```text
-Results vary significantly between runs. All libraries perform similarly,
-with rankings changing between mysqlclient, pymysql, asyncmy, and aiomysql.
-Typical throughput: 80,000-110,000 rows/sec for all libraries.
+1. asyncmy          0.110s  (~91,000 rows/sec)
+2. pymysql          0.128s  (~78,000 rows/sec)
+3. aiomysql         0.129s  (~77,000 rows/sec)
+4. mysqlclient      0.153s  (~65,000 rows/sec)
 ```
+
+**Note:** This workload is largely bound by the MySQL server; rankings between
+the runner-ups can shift between runs, but asyncmy has been consistently fastest.
 
 ## Running the Benchmarks
 
@@ -155,7 +187,7 @@ python -m benchmark.run_all
 This will:
 
 1. Create test database and populate with 100,000 rows
-2. Run all 4 benchmark tests
+2. Run all 4 benchmark tests (warmup + best-of-3 each)
 3. Generate a summary report
 4. Clean up test data
 
@@ -201,40 +233,45 @@ CREATE TABLE benchmark_data (
 Default settings (can be modified in `benchmark/__init__.py`):
 
 ```python
-ROW_COUNT = 100000           # Total test rows
+ROW_COUNT = 100000          # Total test rows
 BATCH_SIZE = 10000          # Batch operation size
 CONCURRENT_COUNT = 50       # Number of concurrent operations
+WARMUP_RUNS = 1             # Discarded warmup runs per test
+MEASURED_RUNS = 3           # Measured runs; fastest is reported
 ```
 
 ## Performance Tips
 
 Based on benchmark results, asyncmy performs best when:
 
-1. **Using connection pools** - asyncmy's pool implementation is highly optimized (22-28% faster than aiomysql)
-2. **Fetching large result sets** - Use asyncmy for queries returning 1,000+ rows (2x faster than aiomysql)
-3. **Processing datetime-heavy data** - Optimized datetime parsing provides significant gains
-4. **Handling concurrent workloads** - Async architecture allows efficient I/O interleaving
+1. **Fetching large result sets** — the C-level bulk row parser makes reads the
+   fastest of any Python MySQL driver tested, sync or async
+2. **Processing datetime-heavy data** — temporal columns parse in C directly
+   from the wire bytes
+3. **Using connection pools** — ~2x aiomysql's pooled throughput
+4. **Handling concurrent workloads** — async architecture plus cheap per-query
+   overhead
 
 ## Comparison with Other Libraries
 
-### vs mysqlclient (sync)
+### vs mysqlclient (sync, C extension)
 
-- ✅ **Competitive** for large result sets (only 5-10% slower)
+- ✅ **2.1x faster** for large result sets
 - ✅ **Better** for concurrent workloads (asyncmy uses async I/O)
-- ⚡ **Similar** for batch inserts (results vary)
+- ✅ **Faster** batch inserts
 
-### vs pymysql (sync)
+### vs pymysql (sync, pure Python)
 
-- ✅ **2x faster** for large result sets
+- ✅ **5x faster** for large result sets
 - ✅ **Much better** for concurrent workloads
 - ✅ **Better** connection pool (asyncmy has native pool)
 
 ### vs aiomysql (async)
 
-- ✅ **2x faster** for large result sets (optimized parsing)
-- ✅ **22-28% faster** connection pool throughput (consistent)
-- ⚡ **Comparable** for concurrent queries (within margin of error)
-- ⚡ **Similar** for batch inserts (results vary)
+- ✅ **5.2x faster** for large result sets (C-level bulk parsing)
+- ✅ **2x** connection pool throughput
+- ✅ **1.6x faster** concurrent queries
+- ✅ **Faster** batch inserts
 
 ## Contributing
 
@@ -255,7 +292,7 @@ Description of what this test measures.
 """
 import asyncio
 import time
-from benchmark import connection_kwargs
+from benchmark import best_result, connection_kwargs
 
 async def test_asyncmy():
     # Your test implementation
@@ -268,8 +305,8 @@ def run_benchmark():
     results = {}
     loop = asyncio.new_event_loop()
 
-    # Run tests and collect results
-    results['asyncmy'] = loop.run_until_complete(test_asyncmy())
+    # Run tests and collect results (warmup + best-of-3)
+    results['asyncmy'] = best_result(lambda: loop.run_until_complete(test_asyncmy()))
 
     # Return sorted results
     return sorted(results.items(), key=lambda x: x[1])

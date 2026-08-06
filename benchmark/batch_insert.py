@@ -11,7 +11,7 @@ import asyncmy
 import MySQLdb
 import pymysql
 
-from benchmark import connection_kwargs, BATCH_SIZE
+from benchmark import best_result, connection_kwargs, BATCH_SIZE
 
 
 def generate_test_data(count=BATCH_SIZE):
@@ -132,25 +132,25 @@ def run_benchmark():
     results = {}
 
     print("\nTesting mysqlclient...")
-    elapsed = test_mysqlclient(data)
+    elapsed = best_result(lambda: test_mysqlclient(data))
     results['mysqlclient'] = elapsed
     print(f"  Time: {elapsed:.3f}s")
     print(f"  Throughput: {BATCH_SIZE/elapsed:.0f} rows/sec")
 
     print("\nTesting pymysql...")
-    elapsed = test_pymysql(data)
+    elapsed = best_result(lambda: test_pymysql(data))
     results['pymysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s")
     print(f"  Throughput: {BATCH_SIZE/elapsed:.0f} rows/sec")
 
     print("\nTesting asyncmy...")
-    elapsed = loop.run_until_complete(test_asyncmy(data))
+    elapsed = best_result(lambda: loop.run_until_complete(test_asyncmy(data)))
     results['asyncmy'] = elapsed
     print(f"  Time: {elapsed:.3f}s")
     print(f"  Throughput: {BATCH_SIZE/elapsed:.0f} rows/sec")
 
     print("\nTesting aiomysql...")
-    elapsed = loop.run_until_complete(test_aiomysql(data))
+    elapsed = best_result(lambda: loop.run_until_complete(test_aiomysql(data)))
     results['aiomysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s")
     print(f"  Throughput: {BATCH_SIZE/elapsed:.0f} rows/sec")

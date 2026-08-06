@@ -13,7 +13,7 @@ import time
 import aiomysql
 import asyncmy
 
-from benchmark import connection_kwargs, CONCURRENT_COUNT
+from benchmark import best_result, connection_kwargs, CONCURRENT_COUNT
 
 
 async def test_asyncmy(num_queries=CONCURRENT_COUNT):
@@ -75,13 +75,13 @@ def run_benchmark():
     results = {}
 
     print("\nTesting asyncmy...")
-    elapsed, count = loop.run_until_complete(test_asyncmy())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_asyncmy()))
     results['asyncmy'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Queries: {count}")
     print(f"  Throughput: {count/elapsed:.0f} queries/sec")
 
     print("\nTesting aiomysql...")
-    elapsed, count = loop.run_until_complete(test_aiomysql())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_aiomysql()))
     results['aiomysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Queries: {count}")
     print(f"  Throughput: {count/elapsed:.0f} queries/sec")

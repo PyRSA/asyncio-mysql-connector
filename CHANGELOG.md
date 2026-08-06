@@ -4,7 +4,14 @@
 
 ### 0.2.12
 
-- Performence improvement， details see [benchmark/README.md](benchmark/README.md).
+- Major performance improvement: buffered packet reading, C-level bulk row parsing,
+  pointer-based protocol reads, direct cell decoding via CPython C-API, zero-decode
+  numeric/temporal columns, escape fast path. Large result sets are 5-15x faster;
+  asyncmy now ranks #1 in all benchmarks, details see [benchmark/README.md](benchmark/README.md).
+- Fix `OKPacketWrapper.message` containing 2 stray bytes (read_struct position bug).
+- Fix `LoadLocalPacketWrapper` missing attribute declarations (LOAD DATA LOCAL crash).
+- Fix potential integer overflow of `rowcount`/`insert_id` on unbuffered cursors and Windows.
+- Benchmark suite now uses warmup + best-of-3 methodology.
 
 ### 0.2.11
 

@@ -15,7 +15,7 @@ import asyncmy
 import MySQLdb
 import pymysql
 
-from benchmark import connection_kwargs
+from benchmark import best_result, connection_kwargs
 
 
 async def test_asyncmy(limit=50000):
@@ -98,22 +98,22 @@ def run_benchmark():
     results = {}
 
     print("\nTesting mysqlclient...")
-    elapsed, count = test_mysqlclient()
+    elapsed, count = best_result(test_mysqlclient)
     results['mysqlclient'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Rows: {count}")
 
     print("\nTesting pymysql...")
-    elapsed, count = test_pymysql()
+    elapsed, count = best_result(test_pymysql)
     results['pymysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Rows: {count}")
 
     print("\nTesting asyncmy...")
-    elapsed, count = loop.run_until_complete(test_asyncmy())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_asyncmy()))
     results['asyncmy'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Rows: {count}")
 
     print("\nTesting aiomysql...")
-    elapsed, count = loop.run_until_complete(test_aiomysql())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_aiomysql()))
     results['aiomysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Rows: {count}")
 

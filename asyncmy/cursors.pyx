@@ -34,10 +34,11 @@ cdef class Cursor:
     #: Max size of allowed statement is max_allowed_packet - packet_header_size.
     #: Default value of max_allowed_packet is 1048576.
     cdef:
-        public int max_stmt_length, rownumber, rowcount, arraysize, _echo
+        public int max_stmt_length, rownumber, arraysize, _echo
+        public object rowcount  # may hold 2**64-1 for unbuffered cursors
         public tuple description
         public connection, _loop, _executed, _result, _rows
-        public unsigned long lastrowid
+        public unsigned long long lastrowid
 
     def __init__(self, connection: "Connection", echo: bool = False):
         self.max_stmt_length = 1024000
@@ -175,12 +176,15 @@ cdef class Cursor:
             pass
 
         query = self.mogrify(query, args)
-        start = time.time()
-        result = await self._query(query)
-        end = time.time()
-        self._executed = query
         if self._echo:
+            start = time.time()
+            result = await self._query(query)
+            end = time.time()
+            self._executed = query
             logger.info(f"[{round((end - start) * 1000, 2)}ms] {query}")
+        else:
+            result = await self._query(query)
+            self._executed = query
         return result
 
     async def executemany(self, query: str, args):
@@ -326,45 +330,36 @@ cdef class Cursor:
         self._executed = q
         return args
 
-    cpdef fetchone(self):
+    async def fetchone(self):
         """Fetch the next row."""
         self._check_executed()
-        fut = self._loop.create_future()
         if self._rows is None or self.rownumber >= len(self._rows):
-            fut.set_result(None)
-            return fut
+            return None
         result = self._rows[self.rownumber]
         self.rownumber += 1
-        fut.set_result(result)
-        return fut
+        return result
 
-    cpdef fetchmany(self, size=None):
+    async def fetchmany(self, size=None):
         """Fetch several rows."""
         self._check_executed()
-        fut = self._loop.create_future()
         if self._rows is None:
-            fut.set_result([])
-            return fut
+            return []
         end = self.rownumber + (size or self.arraysize)
         result = self._rows[self.rownumber: end]
         self.rownumber = min(end, len(self._rows))
-        fut.set_result(result)
-        return fut
+        return result
 
-    cpdef fetchall(self):
+    async def fetchall(self):
         """Fetch all the rows."""
         self._check_executed()
-        fut = self._loop.create_future()
         if self._rows is None:
-            fut.set_result([])
-            return fut
+            return []
         if self.rownumber:
             result = self._rows[self.rownumber:]
         else:
             result = self._rows
         self.rownumber = len(self._rows)
-        fut.set_result(result)
-        return fut
+        return result
 
     cpdef scroll(self, value, mode="relative"):
         self._check_executed()

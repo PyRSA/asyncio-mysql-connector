@@ -3,9 +3,52 @@ import time
 from decimal import Decimal
 
 from cpython cimport datetime
+from cpython.bytes cimport PyBytes_AS_STRING, PyBytes_GET_SIZE
 
 from .constants.FIELD_TYPE import *
 from .errors import ProgrammingError
+
+datetime.import_datetime()
+
+
+cdef inline int _p2(const unsigned char *s) noexcept:
+    """Parse exactly two ASCII digits; -1 if not digits."""
+    if s[0] < 48 or s[0] > 57 or s[1] < 48 or s[1] > 57:
+        return -1
+    return (s[0] - 48) * 10 + (s[1] - 48)
+
+cdef inline int _p4(const unsigned char *s) noexcept:
+    """Parse exactly four ASCII digits; -1 if not digits."""
+    cdef int i, v = 0
+    for i in range(4):
+        if s[i] < 48 or s[i] > 57:
+            return -1
+        v = v * 10 + (s[i] - 48)
+    return v
+
+cdef inline int _pfrac(const unsigned char *s, Py_ssize_t n) noexcept:
+    """Parse up to six fractional-second digits, right-padded to microseconds."""
+    cdef:
+        int v = 0
+        Py_ssize_t i = 0
+    while i < n and i < 6:
+        if s[i] < 48 or s[i] > 57:
+            return -1
+        v = v * 10 + (s[i] - 48)
+        i += 1
+    while i < 6:
+        v *= 10
+        i += 1
+    return v
+
+cdef inline int _days_in_month(int year, int month) noexcept:
+    if month == 2:
+        if (year % 4 == 0 and year % 100 != 0) or year % 400 == 0:
+            return 29
+        return 28
+    if month == 4 or month == 6 or month == 9 or month == 11:
+        return 30
+    return 31
 
 
 cpdef escape_item(val, str charset, mapping: dict = None):
@@ -66,19 +109,44 @@ _escape_table[ord("\032")] = "\\Z"
 _escape_table[ord('"')] = '\\"'
 _escape_table[ord("'")] = "\\'"
 
+cdef inline bint _str_needs_escape(str s):
+    cdef Py_UCS4 ch
+    for ch in s:
+        if ch == 0 or ch == 10 or ch == 13 or ch == 26 or ch == 34 or ch == 39 or ch == 92:
+            return True
+    return False
+
+cdef inline bint _bytes_need_escape(bytes value):
+    cdef:
+        const unsigned char *p = <const unsigned char *> PyBytes_AS_STRING(value)
+        Py_ssize_t i, n = PyBytes_GET_SIZE(value)
+        unsigned char c
+    for i in range(n):
+        c = p[i]
+        if c == 0 or c == 10 or c == 13 or c == 26 or c == 34 or c == 39 or c == 92:
+            return True
+    return False
+
 cpdef str escape_string(value, mapping: dict = None):
     """
     escapes *value* without adding quote.
 
     Value should be unicode
     """
+    # Fast path: most strings contain nothing that needs escaping.
+    if type(value) is str and not _str_needs_escape(<str> value):
+        return <str> value
     return value.translate(_escape_table)
 
 cpdef str escape_bytes_prefixed(bytes value, mapping: dict = None):
-    return "_binary'%s'" % value.decode(b"ascii", "surrogateescape").translate(_escape_table)
+    if not _bytes_need_escape(value):
+        return "_binary'%s'" % value.decode("ascii", "surrogateescape")
+    return "_binary'%s'" % value.decode("ascii", "surrogateescape").translate(_escape_table)
 
 cpdef str escape_bytes(bytes value, mapping: dict = None):
-    return "'%s'" % value.decode(b"ascii", "surrogateescape").translate(_escape_table)
+    if not _bytes_need_escape(value):
+        return "'%s'" % value.decode("ascii", "surrogateescape")
+    return "'%s'" % value.decode("ascii", "surrogateescape").translate(_escape_table)
 
 cpdef str escape_str(value, mapping: dict = None):
     return "'%s'" % escape_string(str(value), mapping)
@@ -131,7 +199,7 @@ DATETIME_RE = re.compile(
     r"(\d{1,4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?"
 )
 
-cpdef object convert_datetime(str obj):
+cpdef object convert_datetime(object obj):
     """Returns a DATETIME or TIMESTAMP column value as a datetime object:
 
       >>> convert_datetime('2007-02-25 23:06:20')
@@ -147,7 +215,48 @@ cpdef object convert_datetime(str obj):
       '0000-00-00 00:00:00'
 
     """
-    if isinstance(obj, (bytes, bytearray)):
+    cdef:
+        const unsigned char *s
+        Py_ssize_t n
+        int b_year, b_month, b_day, b_hour, b_minute, b_second, b_usec
+
+    if type(obj) is bytes:
+        # Fast path: parse "YYYY-MM-DD HH:MM:SS[.ffffff]" straight from bytes,
+        # skipping the intermediate str allocation.
+        s = <const unsigned char *> PyBytes_AS_STRING(<bytes> obj)
+        n = PyBytes_GET_SIZE(<bytes> obj)
+        if (
+            n >= 19
+            and s[4] == 45 and s[7] == 45  # '-'
+            and (s[10] == 32 or s[10] == 84)  # ' ' or 'T'
+            and s[13] == 58 and s[16] == 58  # ':'
+        ):
+            b_year = _p4(s)
+            b_month = _p2(s + 5)
+            b_day = _p2(s + 8)
+            b_hour = _p2(s + 11)
+            b_minute = _p2(s + 14)
+            b_second = _p2(s + 17)
+            if n > 20 and s[19] == 46:  # '.'
+                b_usec = _pfrac(s + 20, n - 20)
+            elif n == 19:
+                b_usec = 0
+            else:
+                b_usec = -1
+            if (
+                b_year >= 1
+                and 1 <= b_month <= 12
+                and 1 <= b_day <= _days_in_month(b_year, b_month)
+                and 0 <= b_hour < 24
+                and 0 <= b_minute < 60
+                and 0 <= b_second < 60
+                and b_usec >= 0
+            ):
+                return datetime.datetime_new(
+                    b_year, b_month, b_day, b_hour, b_minute, b_second, b_usec, None
+                )
+        obj = (<bytes> obj).decode("ascii")
+    elif isinstance(obj, bytearray):
         obj = obj.decode("ascii")
 
     # Fast path: Use string slicing for standard MySQL datetime format
@@ -189,7 +298,7 @@ cpdef object convert_datetime(str obj):
 
 TIMEDELTA_RE = re.compile(r"(-)?(\d{1,3}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?")
 
-cpdef object convert_timedelta(str obj):
+cpdef object convert_timedelta(object obj):
     """Returns a TIME column as a timedelta object:
 
       >>> convert_timedelta('25:06:17')
@@ -206,7 +315,45 @@ cpdef object convert_timedelta(str obj):
     can accept values as (+|-)DD HH:MM:SS. The latter format will not
     be parsed correctly by this function.
     """
-    if isinstance(obj, (bytes, bytearray)):
+    cdef:
+        const unsigned char *s
+        Py_ssize_t n, idx, k, mm_pos
+        bint neg = False
+        int b_hours, b_minutes, b_seconds, b_usec
+
+    if type(obj) is bytes:
+        # Fast path: parse "[-]H{1,3}:MM:SS[.ffffff]" straight from bytes.
+        s = <const unsigned char *> PyBytes_AS_STRING(<bytes> obj)
+        n = PyBytes_GET_SIZE(<bytes> obj)
+        idx = 0
+        if n > 0 and s[0] == 45:  # '-'
+            neg = True
+            idx = 1
+        b_hours = 0
+        k = 0
+        while idx + k < n and k < 3 and 48 <= s[idx + k] <= 57:
+            b_hours = b_hours * 10 + (s[idx + k] - 48)
+            k += 1
+        if k > 0 and idx + k + 6 <= n and s[idx + k] == 58 and s[idx + k + 3] == 58:  # ':'
+            mm_pos = idx + k + 1
+            b_minutes = _p2(s + mm_pos)
+            b_seconds = _p2(s + mm_pos + 3)
+            if n > mm_pos + 6 and s[mm_pos + 5] == 46:  # '.'
+                b_usec = _pfrac(s + mm_pos + 6, n - (mm_pos + 6))
+            elif n == mm_pos + 5:
+                b_usec = 0
+            else:
+                b_usec = -1
+            if 0 <= b_minutes < 60 and 0 <= b_seconds < 60 and b_usec >= 0:
+                if neg:
+                    return datetime.timedelta_new(
+                        0, -(b_hours * 3600 + b_minutes * 60 + b_seconds), -b_usec
+                    )
+                return datetime.timedelta_new(
+                    0, b_hours * 3600 + b_minutes * 60 + b_seconds, b_usec
+                )
+        obj = (<bytes> obj).decode("ascii")
+    elif isinstance(obj, bytearray):
         obj = obj.decode("ascii")
 
     m = TIMEDELTA_RE.match(obj)
@@ -234,7 +381,7 @@ cpdef object convert_timedelta(str obj):
 
 TIME_RE = re.compile(r"(\d{1,2}):(\d{1,2}):(\d{1,2})(?:.(\d{1,6}))?")
 
-cpdef object convert_time(str obj):
+cpdef object convert_time(object obj):
     """Returns a TIME column as a time object:
 
       >>> convert_time('15:06:17')
@@ -256,7 +403,34 @@ cpdef object convert_time(str obj):
     to be treated as time-of-day and not a time offset, then you can
     use set this function as the converter for TIME.
     """
-    if isinstance(obj, (bytes, bytearray)):
+    cdef:
+        const unsigned char *s
+        Py_ssize_t n
+        int b_hour, b_minute, b_second, b_usec
+
+    if type(obj) is bytes:
+        # Fast path: parse "HH:MM:SS[.ffffff]" straight from bytes.
+        s = <const unsigned char *> PyBytes_AS_STRING(<bytes> obj)
+        n = PyBytes_GET_SIZE(<bytes> obj)
+        if n >= 8 and s[2] == 58 and s[5] == 58:  # ':'
+            b_hour = _p2(s)
+            b_minute = _p2(s + 3)
+            b_second = _p2(s + 6)
+            if n > 9 and s[8] == 46:  # '.'
+                b_usec = _pfrac(s + 9, n - 9)
+            elif n == 8:
+                b_usec = 0
+            else:
+                b_usec = -1
+            if (
+                0 <= b_hour < 24
+                and 0 <= b_minute < 60
+                and 0 <= b_second < 60
+                and b_usec >= 0
+            ):
+                return datetime.time_new(b_hour, b_minute, b_second, b_usec, None)
+        obj = (<bytes> obj).decode("ascii")
+    elif isinstance(obj, bytearray):
         obj = obj.decode("ascii")
 
     # Fast path: Use string slicing for standard MySQL time format
@@ -311,7 +485,25 @@ cpdef object convert_date(obj):
       '0000-00-00'
 
     """
-    if isinstance(obj, (bytes, bytearray)):
+    cdef:
+        const unsigned char *s
+        int b_year, b_month, b_day
+
+    if type(obj) is bytes:
+        # Fast path: parse "YYYY-MM-DD" straight from bytes.
+        s = <const unsigned char *> PyBytes_AS_STRING(<bytes> obj)
+        if PyBytes_GET_SIZE(<bytes> obj) == 10 and s[4] == 45 and s[7] == 45:  # '-'
+            b_year = _p4(s)
+            b_month = _p2(s + 5)
+            b_day = _p2(s + 8)
+            if (
+                b_year >= 1
+                and 1 <= b_month <= 12
+                and 1 <= b_day <= _days_in_month(b_year, b_month)
+            ):
+                return datetime.date_new(b_year, b_month, b_day)
+        obj = (<bytes> obj).decode("ascii")
+    elif isinstance(obj, bytearray):
         obj = obj.decode("ascii")
 
     # Fast path: Use string slicing for standard MySQL date format

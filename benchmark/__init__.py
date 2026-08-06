@@ -26,3 +26,21 @@ connection_kwargs = dict(
 ROW_COUNT = 100000  # Total rows for testing
 BATCH_SIZE = 10000  # Batch size for operations
 CONCURRENT_COUNT = 50  # Number of concurrent operations (limited by MySQL max_connections)
+
+# Measurement configuration
+WARMUP_RUNS = 1  # Runs discarded before measuring (JIT caches, buffer pool, auth cache)
+MEASURED_RUNS = 3  # Measured runs; the fastest one is reported
+
+
+def best_result(fn, warmup=WARMUP_RUNS, runs=MEASURED_RUNS):
+    """Run `fn` with warmup, then return its best (fastest) result.
+
+    `fn` must return either an elapsed float or a tuple whose first item is
+    the elapsed time.
+    """
+    for _ in range(warmup):
+        fn()
+    results = [fn() for _ in range(runs)]
+    if isinstance(results[0], tuple):
+        return min(results, key=lambda r: r[0])
+    return min(results)

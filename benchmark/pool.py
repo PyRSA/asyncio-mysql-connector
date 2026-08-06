@@ -13,7 +13,7 @@ import time
 import aiomysql
 from asyncmy.pool import create_pool
 
-from benchmark import connection_kwargs
+from benchmark import best_result, connection_kwargs
 
 
 POOL_SIZE_MIN = 5
@@ -92,13 +92,13 @@ def run_benchmark():
     results = {}
 
     print("\nTesting asyncmy pool...")
-    elapsed, count = loop.run_until_complete(test_asyncmy_pool())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_asyncmy_pool()))
     results['asyncmy'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Queries: {count}")
     print(f"  Throughput: {count/elapsed:.0f} queries/sec")
 
     print("\nTesting aiomysql pool...")
-    elapsed, count = loop.run_until_complete(test_aiomysql_pool())
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_aiomysql_pool()))
     results['aiomysql'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Queries: {count}")
     print(f"  Throughput: {count/elapsed:.0f} queries/sec")

@@ -1,6 +1,6 @@
 [project]
 authors = [{ name = "long2ice", email = "long2ice@gmail.com" }]
-description = "A fast asyncio MySQL driver"
+description = "The fastest asyncio MySQL/MariaDB driver for Python"
 keywords = ["driver", "asyncio", "mysql"]
 license = "Apache-2.0"
 name = "asyncmy"
