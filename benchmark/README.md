@@ -69,6 +69,19 @@ Measured impact (driver-level micro-benchmarks, 50k rows, best-of-N):
 | SSCursor (unbuffered) scan  | 111.0ms | 39.5ms  | 2.8x    |
 | Pooled small queries        | 229.0ms | 185.4ms | 1.24x   |
 
+## Cross-language: vs native Go/Rust drivers
+
+Same machine, same data, full type materialization ([details & fairness notes](./crosslang/README.md)):
+
+| Scenario | Go (go-sql-driver) | asyncmy | Rust (mysql_async) |
+| --- | --- | --- | --- |
+| 50k-row mixed-type full scan | **0.032s** | 0.036s | 0.048s |
+| Pooled 20×200 point queries | 0.076s | 0.093s | **0.048s** |
+
+asyncmy's scan path is within ~12% of Go and ~25% faster than the mainstream
+async Rust driver. The point-query gap is mostly prepared statements + binary
+protocol (which Go/Rust use and asyncmy doesn't yet), not the language.
+
 ## Test Scenarios
 
 ### 1. Large Result Set (`large_resultset.py`)
