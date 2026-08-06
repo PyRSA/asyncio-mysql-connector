@@ -794,6 +794,8 @@ class Connection:
             await self._read_ok_packet()
         except Exception:
             if reconnect:
+                self.close()
+                self._connected = False
                 await self.connect()
                 await self.ping(False)
             else:

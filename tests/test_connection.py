@@ -30,6 +30,31 @@ async def test_read_timeout(connection_kwargs):
 
 
 @pytest.mark.asyncio
+async def test_ping_reconnect_refreshes_password(mocker):
+    class ReconnectAttempt(Exception):
+        pass
+
+    password_creator = mocker.Mock(return_value="fresh-password")
+    connection = Connection(password_creator=password_creator)
+    connection._connected = True
+    mocker.patch.object(
+        connection,
+        "_execute_command",
+        side_effect=OperationalError("connection lost"),
+    )
+    mocker.patch.object(
+        connection._loop,
+        "create_connection",
+        side_effect=ReconnectAttempt,
+    )
+
+    with pytest.raises(ReconnectAttempt):
+        await connection.ping(reconnect=True)
+
+    password_creator.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_transaction(connection):
     await connection.begin()
     await connection.query(

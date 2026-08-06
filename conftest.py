@@ -7,6 +7,7 @@ from asyncmy.cursors import DictCursor
 import asyncmy
 from asyncmy import connect
 
+
 def mysql_password_creator():
     """Return the MySQL password dynamically"""
     return os.getenv("MYSQL_PASS") or "123456"
