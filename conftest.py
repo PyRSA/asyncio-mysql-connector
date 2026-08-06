@@ -9,7 +9,7 @@ from asyncmy import connect
 
 connection_kwargs = dict(
     host=os.getenv("MYSQL_HOST") or "127.0.0.1",
-    port=os.getenv("MYSQL_PORT") or 3306,
+    port=int(os.getenv("MYSQL_PORT") or 3306),
     user=os.getenv("MYSQL_USER") or "root",
     password=os.getenv("MYSQL_PASS") or "123456",
     echo=True,

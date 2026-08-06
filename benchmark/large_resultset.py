@@ -34,6 +34,22 @@ async def test_asyncmy(limit=50000):
     return elapsed, len(rows)
 
 
+async def test_asyncmy_binary(limit=50000):
+    """Fetch large result set with asyncmy via the binary protocol"""
+    conn = await asyncmy.connect(stmt_cache_size=16, **connection_kwargs)
+    async with conn.cursor() as cur:
+        start = time.time()
+        await cur.execute(
+            "SELECT * FROM benchmark_data WHERE is_active = 1 LIMIT %s",
+            (limit,)
+        )
+        rows = await cur.fetchall()
+        elapsed = time.time() - start
+
+    await conn.ensure_closed()
+    return elapsed, len(rows)
+
+
 async def test_aiomysql(limit=50000):
     """Fetch large result set with aiomysql"""
     conn = await aiomysql.connect(**connection_kwargs)
@@ -110,6 +126,11 @@ def run_benchmark():
     print("\nTesting asyncmy...")
     elapsed, count = best_result(lambda: loop.run_until_complete(test_asyncmy()))
     results['asyncmy'] = elapsed
+    print(f"  Time: {elapsed:.3f}s, Rows: {count}")
+
+    print("\nTesting asyncmy (binary protocol)...")
+    elapsed, count = best_result(lambda: loop.run_until_complete(test_asyncmy_binary()))
+    results['asyncmy-binary'] = elapsed
     print(f"  Time: {elapsed:.3f}s, Rows: {count}")
 
     print("\nTesting aiomysql...")

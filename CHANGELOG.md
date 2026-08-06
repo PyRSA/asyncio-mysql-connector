@@ -21,6 +21,12 @@
 - DictCursor builds row dicts at C level.
 - Fix `LOAD DATA LOCAL INFILE` sending (`await` on a non-coroutine) and add write backpressure.
 - Build Linux aarch64 wheels.
+- Negotiate `CLIENT_DEPRECATE_EOF`: one packet less per result set and per prepare
+  (both MySQL 5.7.5+ and MariaDB support it; legacy EOF path kept for older servers).
+- MariaDB: support `COM_STMT_BULK_EXECUTE` — `executemany` binds all rows in binary
+  form in one round-trip when `stmt_cache_size` is enabled (automatic text fallback);
+  also available explicitly via `stmt.execute_bulk(rows)`.
+- Fix `conftest.py` ignoring a non-default `MYSQL_PORT`.
 
 ### 0.2.12
 

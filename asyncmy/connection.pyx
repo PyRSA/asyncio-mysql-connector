@@ -20,12 +20,13 @@ from asyncmy.optionfile import Parser
 from asyncmy.protocol import (EOFPacketWrapper, FieldDescriptorPacket,
                               LoadLocalPacketWrapper, MysqlPacket,
                               OKPacketWrapper, pack_binary_params,
-                              parse_binary_rows_from_buffer,
+                              pack_bulk_rows, parse_binary_rows_from_buffer,
                               parse_rows_from_buffer, skip_packets_from_buffer)
 
 from .constants.CLIENT import (CAPABILITIES, CONNECT_ATTRS, CONNECT_WITH_DB,
-                               LOCAL_FILES, MULTI_RESULTS, MULTI_STATEMENTS,
-                               PLUGIN_AUTH, PLUGIN_AUTH_LENENC_CLIENT_DATA,
+                               DEPRECATE_EOF, LOCAL_FILES, MULTI_RESULTS,
+                               MULTI_STATEMENTS, PLUGIN_AUTH,
+                               PLUGIN_AUTH_LENENC_CLIENT_DATA,
                                SECURE_CONNECTION, SSL)
 from .constants.COMMAND import (COM_INIT_DB, COM_PING, COM_PROCESS_KILL,
                                 COM_QUERY, COM_QUIT, COM_STMT_CLOSE,
@@ -36,7 +37,8 @@ from .constants.ER import FILE_NOT_FOUND
 from .constants.FIELD_TYPE import (BIT, BLOB, GEOMETRY, JSON, LONG_BLOB,
                                    MEDIUM_BLOB, STRING, TINY_BLOB, VAR_STRING,
                                    VARCHAR)
-from .constants.SERVER_STATUS import (SERVER_STATUS_AUTOCOMMIT,
+from .constants.SERVER_STATUS import (SERVER_MORE_RESULTS_EXISTS,
+                                      SERVER_STATUS_AUTOCOMMIT,
                                       SERVER_STATUS_IN_TRANS,
                                       SERVER_STATUS_NO_BACKSLASH_ESCAPES)
 from .contexts import _ConnectionContextManager
@@ -80,6 +82,11 @@ cdef int MAX_PACKET_LEN = 2 ** 24 - 1
 
 # Initial size of the protocol receive buffer.
 cdef int READ_CHUNK_SIZE = 2 ** 18
+
+# MariaDB-specific protocol extensions
+cdef int COM_STMT_BULK_EXECUTE = 0xFA
+cdef unsigned int MARIADB_CLIENT_STMT_BULK_OPERATIONS = 1 << 2  # extended-caps dword
+cdef unsigned int CLIENT_MYSQL = 1  # bit 0: cleared to signal MariaDB awareness
 
 # Decoders that accept raw bytes input, allowing us to skip the ascii decode
 # step entirely for their columns.
@@ -463,6 +470,9 @@ class Connection:
         self._proto: Optional[_MySQLProtocol] = None
         self._transport = None
         self._close_reason = None
+        self._deprecate_eof = False  # negotiated during the handshake
+        self._mariadb_ext_caps = 0  # MariaDB extended capabilities
+        self._bulk_supported = False  # MariaDB COM_STMT_BULK_EXECUTE
 
         # Transparent server-side prepared statement cache (binary protocol).
         # 0 disables it; cursor.execute() then always uses the text protocol.
@@ -701,11 +711,11 @@ class Connection:
         num_params = pkt.read_uint16()
         for _ in range(num_params):
             await self.read_packet()  # parameter definitions (unused)
-        if num_params:
+        if num_params and not self._deprecate_eof:
             await self.read_packet()  # EOF
         for _ in range(num_columns):
             await self.read_packet()  # column definitions (re-read on execute)
-        if num_columns:
+        if num_columns and not self._deprecate_eof:
             await self.read_packet()  # EOF
         return PreparedStatement(self, statement_id, num_params)
 
@@ -800,6 +810,9 @@ class Connection:
             self._close_reason = None
             # statement ids do not survive reconnects
             self._stmt_cache.clear()
+            self._deprecate_eof = False
+            self._mariadb_ext_caps = 0
+            self._bulk_supported = False
             loop = self._loop
 
             if self._unix_socket:
@@ -1066,6 +1079,12 @@ class Connection:
         if int(self.server_version.split(".", 1)[0]) >= 5:
             self._client_flag |= MULTI_RESULTS
 
+        if self.server_capabilities & DEPRECATE_EOF:
+            # Result sets then omit the EOF between metadata and rows and end
+            # with an OK packet (0xFE header) instead of an EOF packet.
+            self._client_flag |= DEPRECATE_EOF
+            self._deprecate_eof = True
+
         if self._user is None:
             raise ValueError("Did not specify a username")
 
@@ -1100,7 +1119,20 @@ class Connection:
         if isinstance(self._user, str):
             self._user = self._user.encode(self._encoding)
 
-        data_init = iIB23s.pack(self._client_flag, MAX_PACKET_LEN, charset_id, b"")
+        if self._mariadb_ext_caps & MARIADB_CLIENT_STMT_BULK_OPERATIONS:
+            # MariaDB: clear CLIENT_MYSQL and advertise extended capabilities
+            # in the last 4 bytes of the 23-byte filler.
+            self._client_flag &= ~CLIENT_MYSQL
+            self._bulk_supported = True
+            data_init = (
+                i.pack(self._client_flag)
+                + I.pack(MAX_PACKET_LEN)
+                + B_.pack(charset_id)
+                + b"\x00" * 19
+                + I.pack(MARIADB_CLIENT_STMT_BULK_OPERATIONS)
+            )
+        else:
+            data_init = iIB23s.pack(self._client_flag, MAX_PACKET_LEN, charset_id, b"")
         data = data_init + self._user + b"\0"
 
         authresp = b""
@@ -1322,7 +1354,10 @@ class Connection:
             self.server_capabilities |= cap_h << 16
             salt_len = max(12, salt_len - 9)
 
-        # reserved
+        # reserved: 6 filler bytes, then 4 bytes of MariaDB extended
+        # capabilities (zero on MySQL servers)
+        if "MariaDB" in self.server_version and len(data) >= i + 10:
+            self._mariadb_ext_caps = I.unpack(data[i + 6: i + 10])[0]
         i += 10
 
         if len(data) >= i + salt_len:
@@ -1421,6 +1456,35 @@ class PreparedStatement:
             conn.server_status = result.server_status
         return result
 
+    async def execute_bulk(self, rows):
+        """MariaDB COM_STMT_BULK_EXECUTE: bind many rows in one round-trip.
+
+        ``rows`` is a sequence of parameter tuples. Returns the result object
+        (``affected_rows``, ``insert_id``). Only usable when the server
+        advertises MARIADB_CLIENT_STMT_BULK_OPERATIONS.
+        """
+        conn = self._connection
+        if self._closed or conn is None:
+            raise errors.ProgrammingError("Prepared statement is closed")
+        if not conn._bulk_supported:
+            raise errors.NotSupportedError("Server does not support COM_STMT_BULK_EXECUTE")
+        packed = pack_bulk_rows(rows, self._parameter_count, conn._encoding)
+        if packed is None:
+            # Raised before any I/O, so callers may safely fall back.
+            raise ValueError(
+                "Rows are not bulk-compatible (mixed types or all-NULL column)"
+            )
+        # stmt_id(4) + flags(2): 128 = SEND_TYPES_TO_SERVER
+        payload = I.pack(self._statement_id) + b"\x80\x00" + packed[0] + packed[1]
+        await conn._execute_command(COM_STMT_BULK_EXECUTE, payload)
+        result = MySQLResult(conn)
+        await result.read()  # single OK (or error) packet
+        conn._result = result
+        conn._affected_rows = result.affected_rows
+        if result.server_status != 0:
+            conn.server_status = result.server_status
+        return result
+
     async def close(self):
         """Deallocate the statement on the server (no server response)."""
         if self._closed:
@@ -1451,9 +1515,11 @@ cdef class MySQLResult:
         tuple _binary_colspecs
         list _pending_rows
         Py_ssize_t _pending_idx
+        bint _deprecate_eof
 
     def __init__(self, connection: Connection):
         self.connection = connection
+        self._deprecate_eof = connection._deprecate_eof
         self.affected_rows = 0
         self.insert_id = 0
         self.server_status = 0
@@ -1510,7 +1576,8 @@ cdef class MySQLResult:
 
     async def _consume_descriptions(self, tuple meta):
         """Skip the column definition packets, reusing cached metadata."""
-        cdef Py_ssize_t remaining = self.field_count + 1  # definitions + EOF
+        # column definitions, plus a trailing EOF unless DEPRECATE_EOF is on
+        cdef Py_ssize_t remaining = self.field_count + (0 if self._deprecate_eof else 1)
         conn = self.connection
         proto = conn._proto
         while remaining:
@@ -1537,7 +1604,8 @@ cdef class MySQLResult:
         proto = conn._proto
         while True:
             new_pos, new_seq = parse_binary_rows_from_buffer(
-                proto.buffer, proto.pos, proto.length, specs, conn._next_seq_id, rows
+                proto.buffer, proto.pos, proto.length, specs, conn._next_seq_id, rows,
+                self._deprecate_eof,
             )
             proto.pos = new_pos
             conn._next_seq_id = new_seq
@@ -1603,12 +1671,23 @@ cdef class MySQLResult:
         self._read_ok_packet(ok_packet)
 
     def _check_packet_is_eof(self, packet):
+        if self._deprecate_eof:
+            # Result sets end with an OK packet carrying a 0xFE header.
+            # A row packet can never start with 0xFE at payload < 16MB (that
+            # first byte would be an 8-byte length-encoded integer marker,
+            # implying a >=16MB packet).
+            if not packet.is_auth_switch_request():  # first byte != 0xFE
+                return False
+            packet.advance(1)
+            packet.read_length_encoded_integer()  # affected rows
+            packet.read_length_encoded_integer()  # insert id
+            server_status = packet.read_uint16()
+            self.warning_count = packet.read_uint16()
+            self.server_status = server_status
+            self.has_next = server_status & SERVER_MORE_RESULTS_EXISTS
+            return True
         if not packet.is_eof_packet():
             return False
-        # TODO: Support DEPRECATE_EOF
-        # 1) Add DEPRECATE_EOF to CAPABILITIES
-        # 2) Mask CAPABILITIES with server_capabilities
-        # 3) if server_capabilities & DEPRECATE_EOF: use OKPacketWrapper instead of EOFPacketWrapper
         wp = EOFPacketWrapper(packet)
         self.warning_count = wp.warning_count
         self.has_next = wp.has_next
@@ -1639,7 +1718,7 @@ cdef class MySQLResult:
         cdef list rows = []
         new_pos, new_seq = parse_rows_from_buffer(
             proto.buffer, proto.pos, proto.length, self._row_converters,
-            conn._next_seq_id, rows
+            conn._next_seq_id, rows, self._deprecate_eof,
         )
         proto.pos = new_pos
         conn._next_seq_id = new_seq
@@ -1685,7 +1764,8 @@ cdef class MySQLResult:
             # Bulk-parse every complete row packet already sitting in the
             # receive buffer without touching the event loop.
             new_pos, new_seq = parse_rows_from_buffer(
-                proto.buffer, proto.pos, proto.length, convs, conn._next_seq_id, rows
+                proto.buffer, proto.pos, proto.length, convs, conn._next_seq_id, rows,
+                self._deprecate_eof,
             )
             proto.pos = new_pos
             conn._next_seq_id = new_seq
@@ -1758,8 +1838,9 @@ cdef class MySQLResult:
 
         self._row_converters = tuple(self.converters)
         self._binary_colspecs = tuple(binary_specs)
-        eof_packet = await self.connection.read_packet()
-        assert eof_packet.is_eof_packet(), "Protocol error, expecting EOF"
+        if not self._deprecate_eof:
+            eof_packet = await self.connection.read_packet()
+            assert eof_packet.is_eof_packet(), "Protocol error, expecting EOF"
         self.description = tuple(description)
 
 

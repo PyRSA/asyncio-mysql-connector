@@ -11,8 +11,12 @@ Apple M4 Max, MySQL 9.7.1 on localhost, warmup + best-of-N:
 
 | Scenario | Go (go-sql-driver v1.10) | asyncmy text | asyncmy binary (`conn.prepare`) | Rust (mysql_async 0.36) |
 | --- | --- | --- | --- | --- |
-| 50k-row mixed-type full scan | 0.032s | 0.036s | **0.024s** | 0.048s |
-| Pooled 20×200 point queries | 0.076s | 0.093s (0.072s with uvloop) | 0.084s (**0.063s** with uvloop) | **0.048s** |
+| 50k-row mixed-type full scan | 0.032s | 0.037s | **0.023s** | 0.048s |
+| Pooled 20×200 point queries | 0.076s | 0.093s (0.067s with uvloop) | 0.084s (**0.062s** with uvloop) | **0.048s** |
+
+With `stmt_cache_size` set, plain `cursor.execute("%s")` code gets the binary
+path transparently: 0.025s scans and 0.064s pooled point queries (uvloop)
+with zero code changes.
 
 Takeaways:
 

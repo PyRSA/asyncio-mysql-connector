@@ -23,10 +23,10 @@ asyncmy ranks **#1 in all four scenarios** against `mysqlclient`, `pymysql`, and
 
 | Test | asyncmy Rank | Performance |
 | ---- | ------------ | ----------- |
-| **Large Result Set** (33k rows, all types) | 🏆 **#1/4** | 0.031s — 2.1x faster than mysqlclient, 5.2x faster than aiomysql |
+| **Large Result Set** (33k rows, all types) | 🏆 **#1/4** | 0.030s — 2.2x faster than mysqlclient, 5.3x faster than aiomysql |
 | **Connection Pool** (2k queries) | 🏆 **#1/2** | ~17,000 qps — 2x aiomysql's throughput |
-| **Concurrent Queries** (50 connections) | 🏆 **#1/2** | ~8,600 qps — 1.6x faster than aiomysql |
-| **Batch Insert** (10k rows) | 🏆 **#1/4** | ~91,000 rows/sec — fastest of all four drivers |
+| **Concurrent Queries** (50 connections) | 🏆 **#1/2** | ~8,000 qps — 1.6x faster than aiomysql |
+| **Batch Insert** (10k rows) | 🏆 **#1/4** | ~107,000 rows/sec — fastest of all four drivers |
 
 The protocol core is engineered for zero waste on the hot path:
 

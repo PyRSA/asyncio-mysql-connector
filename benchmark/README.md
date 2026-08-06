@@ -20,18 +20,22 @@ runs**. This is handled by `best_result()` in `benchmark/__init__.py`.
 
 | Test                                     | Winner         | asyncmy Rank | Notes                                        |
 | ---------------------------------------- | -------------- | ------------ | -------------------------------------------- |
-| **Large Result Set** (33k rows)          | 🏆 **asyncmy** | **#1/4**     | 2.1x faster than mysqlclient (a C sync lib)  |
+| **Large Result Set** (33k rows)          | 🏆 **asyncmy** | **#1/5**     | 2.2x faster than mysqlclient (a C sync lib)  |
 | **Concurrent Queries** (50 connections)  | 🏆 **asyncmy** | **#1/2**     | 1.6x faster than aiomysql                    |
-| **Connection Pool** (2k queries)         | 🏆 **asyncmy** | **#1/2**     | 2x aiomysql's throughput                     |
-| **Batch Insert** (10k rows)              | 🏆 **asyncmy** | **#1/4**     | ~91k rows/sec, fastest of all four           |
+| **Connection Pool** (2k queries)         | 🏆 **asyncmy** | **#1/2**     | 2x aiomysql's throughput (~17k qps)          |
+| **Batch Insert** (10k rows)              | 🏆 **asyncmy** | **#1/4**     | ~107k rows/sec, fastest of all four          |
 
 ## Key Insights
 
-- ✅ **Large Result Set**: asyncmy is now the fastest driver, period — 2.1x faster
-  than mysqlclient and 5.2x faster than aiomysql/pymysql
+- ✅ **Large Result Set**: asyncmy is now the fastest driver, period — 2.2x faster
+  than mysqlclient and 5.3x faster than aiomysql/pymysql
 - ✅ **Connection Pool**: ~17,000 queries/sec, double aiomysql's throughput
 - ✅ **Concurrent Queries**: fastest connection setup + query round-trip
-- ✅ **Batch Insert**: fastest `executemany()` of all four drivers
+- ✅ **Batch Insert**: fastest `executemany()` of all four drivers (~107k rows/sec)
+- ✅ **Binary protocol** (`stmt_cache_size`): on numeric/datetime-heavy tables the
+  binary path is another ~35% faster than the text protocol (see the
+  [cross-language benchmark](./crosslang/README.md)); on this suite's
+  string-heavy schema text and binary are equal
 
 ## Recent Optimizations
 
@@ -69,6 +73,17 @@ Measured impact (driver-level micro-benchmarks, 50k rows, best-of-N):
 | SSCursor (unbuffered) scan  | 111.0ms | 39.5ms  | 2.8x    |
 | Pooled small queries        | 229.0ms | 185.4ms | 1.24x   |
 
+0.2.13 adds the binary protocol and a zero-copy receive path on top
+(mixed-type 50k-row scan on `test.bench`, best-of-N):
+
+| Path                                        | 0.2.12 (text) | 0.2.13  |
+| ------------------------------------------- | ------------- | ------- |
+| `conn.prepare()` binary scan                | —             | 22.9ms  |
+| `cursor.execute` + `stmt_cache_size` scan   | 36.9ms        | 25.3ms  |
+| Text-protocol scan                          | 37.4ms        | 36.9ms  |
+| SSCursor scan (bulk prefetch)               | 39.5ms        | 36.8ms  |
+| Pooled point queries via cursor (uvloop)    | 71.7ms        | 64.2ms  |
+
 ## Cross-language: vs native Go/Rust drivers
 
 Same machine, same data, full type materialization ([details & fairness notes](./crosslang/README.md)):
@@ -99,10 +114,11 @@ Tests the efficiency of fetching and processing large datasets in a single query
 **Results (typical):**
 
 ```text
-1. asyncmy          0.031s  (1.00x vs best)
-2. mysqlclient      0.066s  (0.47x vs best)
-3. pymysql          0.155s  (0.20x vs best)
-4. aiomysql         0.161s  (0.19x vs best)
+1. asyncmy-binary   0.030s  (1.00x vs best)
+2. asyncmy          0.030s  (0.98x vs best)
+3. mysqlclient      0.067s  (0.44x vs best)
+4. pymysql          0.153s  (0.19x vs best)
+5. aiomysql         0.158s  (0.19x vs best)
 ```
 
 ### 2. Concurrent Queries (`concurrent.py`)
@@ -162,10 +178,10 @@ Tests bulk insert performance using `executemany()`.
 **Results (typical):**
 
 ```text
-1. asyncmy          0.110s  (~91,000 rows/sec)
-2. pymysql          0.128s  (~78,000 rows/sec)
-3. aiomysql         0.129s  (~77,000 rows/sec)
-4. mysqlclient      0.153s  (~65,000 rows/sec)
+1. asyncmy          0.093s  (~107,000 rows/sec)
+2. aiomysql         0.108s  (~92,000 rows/sec)
+3. mysqlclient      0.110s  (~91,000 rows/sec)
+4. pymysql          0.121s  (~83,000 rows/sec)
 ```
 
 **Note:** This workload is largely bound by the MySQL server; rankings between

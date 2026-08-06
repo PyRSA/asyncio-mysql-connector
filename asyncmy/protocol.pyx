@@ -95,7 +95,8 @@ cdef tuple _parse_row(const unsigned char *p, Py_ssize_t size, tuple converters)
 
 
 def parse_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
-                           tuple converters, unsigned int seq_id, list rows):
+                           tuple converters, unsigned int seq_id, list rows,
+                           bint deprecate_eof=False):
     """Parse as many complete row packets as available in ``buf[pos:buf_len]``.
 
     Stops (without consuming) at the first packet that is incomplete, has a
@@ -123,8 +124,8 @@ def parse_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
         first = base[pos + 4]
         if first == 0xFF:
             break  # error packet
-        if first == 0xFE and payload_len < 9:
-            break  # EOF packet
+        if first == 0xFE and (deprecate_eof or payload_len < 9):
+            break  # EOF packet / DEPRECATE_EOF terminating OK packet
         rows.append(_parse_row(base + pos + 4, payload_len, converters))
         pos += 4 + payload_len
         seq_id = (seq_id + 1) & 0xFF
@@ -327,7 +328,8 @@ cdef tuple _parse_binary_row(const unsigned char *p, Py_ssize_t size, tuple cols
 
 
 def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_len,
-                                  tuple colspecs, unsigned int seq_id, list rows):
+                                  tuple colspecs, unsigned int seq_id, list rows,
+                                  bint deprecate_eof=False):
     """Binary-protocol counterpart of parse_rows_from_buffer."""
     cdef:
         const unsigned char *base = <const unsigned char *> PyByteArray_AS_STRING(buf)
@@ -345,8 +347,8 @@ def parse_binary_rows_from_buffer(bytearray buf, Py_ssize_t pos, Py_ssize_t buf_
         first = base[pos + 4]
         if first == 0xFF:
             break  # error packet
-        if first == 0xFE and payload_len < 9:
-            break  # EOF packet
+        if first == 0xFE and (deprecate_eof or payload_len < 9):
+            break  # EOF packet / DEPRECATE_EOF terminating OK packet
         rows.append(_parse_binary_row(base + pos + 4, payload_len, colspecs))
         pos += 4 + payload_len
         seq_id = (seq_id + 1) & 0xFF
@@ -423,6 +425,163 @@ cdef inline void _write_u64(bytearray out, unsigned long long v):
     out.append((v >> 40) & 0xFF)
     out.append((v >> 48) & 0xFF)
     out.append((v >> 56) & 0xFF)
+
+
+cdef int _bulk_param_type(object v) except -1:
+    """MYSQL_TYPE code used for a value in COM_STMT_BULK_EXECUTE."""
+    if isinstance(v, bool):
+        return 1  # TINY
+    if isinstance(v, int):
+        return 8  # LONGLONG
+    if isinstance(v, float):
+        return 5  # DOUBLE
+    if isinstance(v, str):
+        return 253  # VAR_STRING
+    if isinstance(v, (bytes, bytearray)):
+        return 252  # BLOB
+    if datetime.PyDateTime_Check(v):
+        return 12  # DATETIME
+    if datetime.PyDate_Check(v):
+        return 10  # DATE
+    if datetime.PyDelta_Check(v) or datetime.PyTime_Check(v):
+        return 11  # TIME
+    if isinstance(v, Decimal):
+        return 246  # NEWDECIMAL
+    return 253  # stringified fallback
+
+
+cdef _append_binary_value(bytearray values, object v, str encoding):
+    """Append one non-NULL value in binary wire format (shared with execute)."""
+    cdef:
+        long long i64v
+        unsigned long long u64v
+        double dv
+        long days, secs
+        long usec
+        unsigned char tmp[8]
+        bytes encoded
+    if isinstance(v, bool):
+        values.append(1 if v else 0)
+    elif isinstance(v, int):
+        if -9223372036854775808 <= v <= 9223372036854775807:
+            i64v = v
+            _write_u64(values, <unsigned long long> i64v)
+        elif 0 < v <= 18446744073709551615:
+            u64v = v
+            _write_u64(values, u64v)
+        else:
+            raise ValueError("int parameter out of 64-bit range for MySQL: %r" % (v,))
+    elif isinstance(v, float):
+        dv = v
+        memcpy(tmp, &dv, 8)
+        values += tmp[:8]
+    elif isinstance(v, str):
+        encoded = (<str> v).encode(encoding)
+        _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+        values += encoded
+    elif isinstance(v, (bytes, bytearray)):
+        encoded = bytes(v)
+        _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+        values += encoded
+    elif datetime.PyDateTime_Check(v):
+        values.append(11)
+        values.append(datetime.PyDateTime_GET_YEAR(v) & 0xFF)
+        values.append((datetime.PyDateTime_GET_YEAR(v) >> 8) & 0xFF)
+        values.append(datetime.PyDateTime_GET_MONTH(v))
+        values.append(datetime.PyDateTime_GET_DAY(v))
+        values.append(datetime.PyDateTime_DATE_GET_HOUR(v))
+        values.append(datetime.PyDateTime_DATE_GET_MINUTE(v))
+        values.append(datetime.PyDateTime_DATE_GET_SECOND(v))
+        _write_u32(values, datetime.PyDateTime_DATE_GET_MICROSECOND(v))
+    elif datetime.PyDate_Check(v):
+        values.append(4)
+        values.append(datetime.PyDateTime_GET_YEAR(v) & 0xFF)
+        values.append((datetime.PyDateTime_GET_YEAR(v) >> 8) & 0xFF)
+        values.append(datetime.PyDateTime_GET_MONTH(v))
+        values.append(datetime.PyDateTime_GET_DAY(v))
+    elif datetime.PyDelta_Check(v):
+        days = datetime.PyDateTime_DELTA_GET_DAYS(v)
+        secs = datetime.PyDateTime_DELTA_GET_SECONDS(v)
+        usec = datetime.PyDateTime_DELTA_GET_MICROSECONDS(v)
+        values.append(12)
+        if days < 0:
+            if secs or usec:
+                days = -days - 1
+                secs = 86400 - secs
+                if usec:
+                    secs -= 1
+                    usec = 1000000 - usec
+            else:
+                days = -days
+            values.append(1)
+        else:
+            values.append(0)
+        _write_u32(values, days)
+        values.append(secs // 3600)
+        values.append((secs % 3600) // 60)
+        values.append(secs % 60)
+        _write_u32(values, usec)
+    elif datetime.PyTime_Check(v):
+        values.append(12)
+        values.append(0)
+        _write_u32(values, 0)
+        values.append(datetime.PyDateTime_TIME_GET_HOUR(v))
+        values.append(datetime.PyDateTime_TIME_GET_MINUTE(v))
+        values.append(datetime.PyDateTime_TIME_GET_SECOND(v))
+        _write_u32(values, datetime.PyDateTime_TIME_GET_MICROSECOND(v))
+    elif isinstance(v, Decimal):
+        encoded = format(v, "f").encode("ascii")
+        _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+        values += encoded
+    else:
+        encoded = str(v).encode(encoding)
+        _write_lenenc(values, PyBytes_GET_SIZE(encoded))
+        values += encoded
+
+
+def pack_bulk_rows(rows, Py_ssize_t nparams, str encoding):
+    """Serialize rows for MariaDB COM_STMT_BULK_EXECUTE.
+
+    Returns ``(types_bytes, rows_bytes)`` or None when the rows are not
+    bulk-compatible (a column is NULL in every row, or mixes value types).
+    Each value is prefixed with an indicator byte (0 = value, 1 = NULL).
+    """
+    cdef:
+        bytearray types = bytearray()
+        bytearray values = bytearray()
+        list col_types = [-1] * nparams
+        Py_ssize_t i
+        int t
+        object row, v
+
+    for row in rows:
+        if len(row) != nparams:
+            return None
+        for i in range(nparams):
+            v = row[i]
+            if v is None:
+                continue
+            t = _bulk_param_type(v)
+            if <int> col_types[i] == -1:
+                col_types[i] = t
+            elif <int> col_types[i] != t:
+                return None  # heterogeneous column: fall back
+    for i in range(nparams):
+        t = <int> col_types[i]
+        if t == -1:
+            return None  # all-NULL column: server needs a concrete type
+        types.append(t)
+        types.append(0)
+
+    for row in rows:
+        for i in range(nparams):
+            v = row[i]
+            if v is None:
+                values.append(1)  # STMT_INDICATOR_NULL
+            else:
+                values.append(0)  # STMT_INDICATOR_NONE
+                _append_binary_value(values, v, encoding)
+    return bytes(types), bytes(values)
 
 
 cpdef bytes pack_binary_params(tuple args, str encoding):

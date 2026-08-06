@@ -232,6 +232,29 @@ cdef class Cursor:
             logger.info("CALL %s", query)
             logger.info("%r", args)
 
+        conn = self._get_db()
+        # MariaDB fast path: one COM_STMT_BULK_EXECUTE round-trip binds every
+        # row in binary form. Falls back to the batched text protocol when
+        # the server/query/rows are not bulk-compatible.
+        if (
+            conn._bulk_supported
+            and conn._stmt_cache_size > 0
+            and type(query) is str
+            and isinstance(args[0], (tuple, list))
+        ):
+            stmt = await conn._acquire_cached_statement(query, len(args[0]))
+            if stmt is not None:
+                try:
+                    result = await stmt.execute_bulk(args)
+                except ValueError:
+                    # not bulk-compatible (raised before any I/O):
+                    # use the batched text protocol below
+                    pass
+                else:
+                    self._executed = query
+                    await self._do_get_result()
+                    return self.rowcount
+
         m = RE_INSERT_VALUES.match(query)
         if m:
             q_prefix: str = m.group(1) % ()
