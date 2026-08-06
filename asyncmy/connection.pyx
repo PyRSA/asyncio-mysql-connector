@@ -322,6 +322,7 @@ class Connection:
         # single socket read serves many packets.
         self._buffer = bytearray()
         self._buf_pos = 0
+        self._close_reason = None
 
         self._auth_plugin_name = ""
 
@@ -366,6 +367,12 @@ class Connection:
             self._writer.transport.close()
         self._writer = None
         self._reader = None
+
+    def _close_on_cancel(self):
+        """Close the connection after a cancelled read left it desynced."""
+        self.close()
+        self._close_reason = "Cancelled during execution"
+        self._connected = False
 
     @property
     def connected(self):
@@ -576,6 +583,7 @@ class Connection:
         try:
             self._buffer = bytearray()
             self._buf_pos = 0
+            self._close_reason = None
 
             if self._unix_socket:
                 self._reader, self._writer = await asyncio.wait_for(
@@ -669,6 +677,11 @@ class Connection:
                         )
                 else:
                     chunk = await reader.read(READ_CHUNK_SIZE)
+            except asyncio.CancelledError:
+                # Cancelled mid-read: the protocol stream is now desynced, so
+                # the connection must not be reused (e.g. returned to a pool).
+                self._close_on_cancel()
+                raise
             except (IOError, OSError, asyncio.TimeoutError) as e:
                 raise errors.OperationalError(
                     CR_SERVER_LOST,
@@ -787,7 +800,7 @@ class Connection:
         :raise ValueError: If no username was specified.
         """
         if not self._connected:
-            raise errors.InterfaceError(0, "Not connected")
+            raise errors.InterfaceError(0, self._close_reason or "Not connected")
 
         # If the last query was unbuffered, make sure it finishes before
         # sending new commands
@@ -885,7 +898,7 @@ class Connection:
                 authresp = auth.scramble_caching_sha2(self._password, self.salt)
         elif self._auth_plugin_name == "sha256_password":
             plugin_name = b"sha256_password"
-            if self.ssl and self.server_capabilities & SSL:
+            if self._ssl_context and self.server_capabilities & SSL:
                 authresp = self._password + b"\0"
             elif self._password:
                 authresp = b"\1"  # request public key

@@ -82,7 +82,9 @@ cpdef str escape_set(set val, str charset, mapping: dict = None):
 cpdef str escape_bool(int value, mapping: dict = None):
     return str(int(value))
 
-cpdef str escape_int(long long value, mapping: dict = None):
+cpdef str escape_int(value, mapping: dict = None):
+    # Accept arbitrary Python ints: a C integer parameter would overflow on
+    # values outside [LLONG_MIN, LLONG_MAX], e.g. unsigned BIGINT 2**64-1 (#35).
     return str(value)
 
 cpdef str escape_float(double value, mapping: dict = None):

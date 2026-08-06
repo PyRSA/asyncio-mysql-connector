@@ -12,6 +12,13 @@
 - Fix `LoadLocalPacketWrapper` missing attribute declarations (LOAD DATA LOCAL crash).
 - Fix potential integer overflow of `rowcount`/`insert_id` on unbuffered cursors and Windows.
 - Benchmark suite now uses warmup + best-of-3 methodology.
+- Security: remove unsafe `escape_dict` — dict keys could reach SQL unescaped (CVE-2025-65896). (#134, #135, thanks @Cycloctane)
+- Fix `AttributeError: 'Connection' object has no attribute 'ssl'` in `sha256_password` auth branch. (#147, #148, thanks @shychee)
+- Support MySQL 8.0.19+ `INSERT ... AS alias ON DUPLICATE KEY UPDATE` syntax in `executemany`. (#116, #120, thanks @MarkReedZ)
+- Pool closes idle/recycled connections with QUIT instead of aborting the TCP stream. (#112, #113, thanks @Cycloctane)
+- Fix `OverflowError` when escaping ints outside the signed 64-bit range, e.g. unsigned BIGINT `2**64-1`. (#35, #127)
+- Close connection when a query is cancelled mid-read to prevent stale results leaking into pooled reuse. (#107, #108)
+- Use `setuptools` instead of deprecated `distutils` in build. (#106, thanks @tijuca)
 
 ### 0.2.11
 

@@ -95,7 +95,11 @@ class Pool(asyncio.AbstractServer):
 
         while self._free:
             conn = self._free.popleft()
-            await conn.ensure_closed()
+            try:
+                await conn.ensure_closed()
+            except Exception:
+                # peer may already be gone; fall back to abrupt close
+                conn.close()
 
         async with self._cond:
             while self.size > self.freesize:
@@ -133,7 +137,11 @@ class Pool(asyncio.AbstractServer):
 
             elif self._recycle > -1 and self._loop.time() - conn.last_usage > self._recycle:
                 self._free.pop()
-                await conn.ensure_closed()
+                try:
+                    await conn.ensure_closed()
+                except Exception:
+                    # peer may already be gone; fall back to abrupt close
+                    conn.close()
 
             else:
                 self._free.rotate()

@@ -1,8 +1,8 @@
 import sys
-from distutils.command.build_ext import build_ext
 
 from Cython.Build import cythonize
 from setuptools import Extension
+from setuptools.command.build_ext import build_ext
 
 COMPILER_DIRECTIVES = {
     "language_level": 3,
