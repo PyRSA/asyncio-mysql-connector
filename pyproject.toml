@@ -43,7 +43,7 @@ test = [
 
 [tool.poetry.build]
 generate-setup-file = true
-script = "build.py"
+script = "build_cython.py"
 
 [build-system]
 build-backend = "poetry.core.masonry.api"

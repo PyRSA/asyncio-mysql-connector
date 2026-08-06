@@ -361,7 +361,7 @@ cdef class Cursor:
         self.rownumber = len(self._rows)
         return result
 
-    cpdef scroll(self, value, mode="relative"):
+    def scroll(self, value, mode="relative"):
         self._check_executed()
         if mode == "relative":
             r = self.rownumber + value
