@@ -1,10 +1,34 @@
 name: ci
 on:
   push:
-    branches-ignore:
-      - main
+    branches:
+      - dev
+    paths-ignore:
+      - "**.md"
+      - "images/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "images/**"
+
+# A new push supersedes whatever is still running for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Lint and type-check once, not once per matrix entry.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v7
+      - name: Run check
+        run: uv run make check
+
   ci_mysql:
     runs-on: ubuntu-latest
     services:
@@ -16,6 +40,7 @@ jobs:
           MYSQL_ROOT_PASSWORD: 123456
         options: --health-cmd="mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 5
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
@@ -24,9 +49,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
-      - name: Run ci
-        run: uv run make ci
+      - name: Run tests
+        run: uv run make test
 
+  # MariaDB exercises server-specific paths (extended capabilities,
+  # COM_STMT_BULK_EXECUTE), which are orthogonal to the Python version — so the
+  # oldest and newest supported interpreters are enough here.
   ci_mariadb:
     runs-on: ubuntu-latest
     services:
@@ -38,13 +66,14 @@ jobs:
           MYSQL_ROOT_PASSWORD: 123456
         options: --health-cmd="mariadb-admin ping -uroot -p${MYSQL_ROOT_PASSWORD}" --health-interval 10s --health-timeout 5s --health-retries 5
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.9", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
-      - name: Run ci
-        run: uv run make ci
+      - name: Run tests
+        run: uv run make test
