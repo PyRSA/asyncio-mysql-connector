@@ -45,8 +45,12 @@ cdef class Cursor:
         public tuple description
         public connection, _loop, _executed, _result, _rows
         public unsigned long long lastrowid
+        public object _query_callback
+        # Set while a batch operation reports as a whole, so the individual
+        # execute() calls it delegates to stay silent.
+        int _in_batch
 
-    def __init__(self, connection: "Connection", echo: bool = False):
+    def __init__(self, connection: "Connection", echo: bool = False, query_callback=None):
         self.max_stmt_length = 1024000
         self.connection = connection
         self.description = None
@@ -57,7 +61,21 @@ cdef class Cursor:
         self._result = None
         self._rows = None
         self._echo = echo
+        self._query_callback = query_callback
+        self._in_batch = 0
         self._loop = self.connection.loop
+
+    cdef inline bint _observed(self):
+        """True when a statement's duration is worth measuring."""
+        return not self._in_batch and (self._echo or self._query_callback is not None)
+
+    cdef _report(self, query, double start):
+        """Emit the echo line and the query callback for one statement."""
+        cdef double elapsed = round((time.time() - start) * 1000, 2)
+        if self._echo:
+            logger.info(f"[{elapsed}ms] {query}")
+        if self._query_callback is not None:
+            self._query_callback(self, query, elapsed)
 
     async def close(self):
         """
@@ -200,23 +218,23 @@ cdef class Cursor:
             stmt_args = args if isinstance(args, (tuple, list)) else (args,)
             stmt = await conn._acquire_cached_statement(query, len(stmt_args))
             if stmt is not None:
-                if self._echo:
+                observed = self._observed()
+                if observed:
                     start = time.time()
                 self._clear_result()
                 await stmt.execute(stmt_args)
                 self._executed = query
                 await self._do_get_result()
-                if self._echo:
-                    logger.info(f"[{round((time.time() - start) * 1000, 2)}ms] {query}")
+                if observed:
+                    self._report(query, start)
                 return self.rowcount
 
         query = self.mogrify(query, args)
-        if self._echo:
+        if self._observed():
             start = time.time()
             result = await self._query(query)
-            end = time.time()
             self._executed = query
-            logger.info(f"[{round((end - start) * 1000, 2)}ms] {query}")
+            self._report(query, start)
         else:
             result = await self._query(query)
             self._executed = query
@@ -243,7 +261,23 @@ cdef class Cursor:
         if self._echo:
             logger.info("CALL %s", query)
             logger.info("%r", args)
+        if self._query_callback is None:
+            return await self._executemany(query, args)
+        # Report the batch as one statement: the paths below may issue a
+        # single bulk round-trip or loop over execute(), and the caller
+        # cares about the executemany() they wrote either way.
+        start = time.time()
+        self._in_batch += 1
+        try:
+            result = await self._executemany(query, args)
+        finally:
+            self._in_batch -= 1
+        # Reported after the fact, like echo: a statement that raised is not
+        # reported, and a callback that raises cannot mask the database error.
+        self._query_callback(self, query, round((time.time() - start) * 1000, 2))
+        return result
 
+    async def _executemany(self, query: str, args):
         conn = self._get_db()
         # MariaDB fast path: one COM_STMT_BULK_EXECUTE round-trip binds every
         # row in binary form. Falls back to the batched text protocol when
@@ -372,6 +406,18 @@ cdef class Cursor:
         if self._echo:
             logger.info("CALL %s", procname)
             logger.info("%r", args)
+        if self._query_callback is None:
+            return await self._callproc(conn, procname, args)
+        start = time.time()
+        self._in_batch += 1
+        try:
+            result = await self._callproc(conn, procname, args)
+        finally:
+            self._in_batch -= 1
+        self._query_callback(self, procname, round((time.time() - start) * 1000, 2))
+        return result
+
+    async def _callproc(self, conn, procname, args):
         if args:
             fmt = f"@_{procname}_%d=%s"
             await self._query(

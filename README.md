@@ -162,6 +162,32 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Statement logging
+
+`echo=True` logs every statement and its duration to the `asyncmy` logger at INFO level. Nothing
+appears until logging is configured — `logging.basicConfig(level=logging.INFO)` at minimum, since
+the root logger defaults to WARNING.
+
+For anything beyond that, pass `query_callback`. It is called as `callback(cursor, query,
+elapsed_ms)` after every successful statement, with the duration as a float in milliseconds:
+
+```py
+import logging
+
+logger = logging.getLogger("myapp.sql")
+
+
+def log_slow_queries(cursor, query, elapsed_ms):
+    if elapsed_ms > 100:
+        logger.warning("[%sms] %s", elapsed_ms, query)
+
+
+conn = await asyncmy.connect(host="localhost", user="root", query_callback=log_slow_queries)
+```
+
+`executemany` and `callproc` report once for the whole call rather than once per row. The callback
+is independent of `echo`: set both and you get the log line and the callback.
+
 ## Replication
 
 asyncmy supports the MySQL replication protocol (like [python-mysql-replication](https://github.com/noplay/python-mysql-replication)) over asyncio.

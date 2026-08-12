@@ -14,6 +14,10 @@
   works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
 - Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
   made `GtidSet` (and therefore GTID replication) unusable (#59).
+- Add `connect(query_callback=...)`, called as `callback(cursor, query, elapsed_ms)` after every
+  statement. Lets statement logging go somewhere other than `echo`'s hardcoded INFO line — a
+  slow-query log, a tracing span, a different level. `executemany`/`callproc` report once per
+  call. Independent of `echo`, which is unchanged (#81, #69).
 - Add `connect(sock=...)`: speak MySQL over a socket the caller has already connected. Combined
   with `ssl` the TLS handshake runs before the MySQL handshake instead of being negotiated
   in-protocol, which is what connectors fronting the server with a TLS proxy need (#71).

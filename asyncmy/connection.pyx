@@ -306,6 +306,13 @@ class Connection:
         This option defaults to true.
     :param client_flag: Custom flags to send to MySQL. Find potential values in constants.
     :param cursor_cls: Custom cursor class to use.
+    :param query_callback:
+        Called as ``callback(cursor, query, elapsed_ms)`` after every statement,
+        with the duration as a float in milliseconds. Use it to route statement
+        logging wherever you want — a different level than ``echo``'s INFO, a
+        slow-query log, a tracing span. ``executemany`` and ``callproc`` report
+        once for the whole call rather than per row. Independent of ``echo``:
+        setting both logs and calls back.
     :param init_command: Initial SQL statement to run when connection is established.
     :param connect_timeout: The timeout for connecting to the database in seconds.
         (default: 10, min: 1, max: 31536000)
@@ -357,6 +364,7 @@ class Connection:
             program_name=None,
             server_public_key=None,
             echo=False,
+            query_callback=None,
             ssl=None,
             stmt_cache_size=0,
             db=None,  # deprecated
@@ -421,6 +429,7 @@ class Connection:
             self._ssl_context = self._create_ssl_ctx(ssl)
 
         self._echo = echo
+        self._query_callback = query_callback
         self._last_usage = self._loop.time()
 
         self._host = host or "localhost"
@@ -703,8 +712,8 @@ class Connection:
         """
         self._last_usage = self._loop.time()
         if cursor:
-            return cursor(self, echo=self._echo)
-        return self._cursor_cls(self, echo=self._echo)
+            return cursor(self, echo=self._echo, query_callback=self._query_callback)
+        return self._cursor_cls(self, echo=self._echo, query_callback=self._query_callback)
 
     # The following methods are INTERNAL USE ONLY (called from Cursor)
     async def query(self, sql, unbuffered=False):
@@ -1964,6 +1973,7 @@ def connect(user=None,
             binary_prefix=False,
             program_name=None,
             echo=False,
+            query_callback=None,
             server_public_key=None,
             ssl=None,
             stmt_cache_size=0,
@@ -1996,6 +2006,7 @@ def connect(user=None,
         program_name=program_name,
         server_public_key=server_public_key,
         echo=echo,
+        query_callback=query_callback,
         ssl=ssl,
         stmt_cache_size=stmt_cache_size,
         db=db,  # deprecated
