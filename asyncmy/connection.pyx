@@ -4,6 +4,7 @@
 # https://dev.mysql.com/doc/refman/5.5/en/error-handling.html
 import asyncio
 import errno
+import inspect
 import os
 import socket
 import sys
@@ -280,6 +281,14 @@ class Connection:
     :param host: Host where the database server is located.
     :param user: Username to log in as.
     :param password: Password to use.
+    :param password_creator:
+        Callable returning the password to authenticate with, consulted before
+        every connection attempt — including the ones a pool makes on its own
+        when it recycles or reconnects, which is the point: short-lived
+        credentials such as AWS RDS IAM tokens expire while pooled connections
+        outlive them, and nothing else gives you a hook at that moment.
+        May be a plain function or return an awaitable. Must return ``str`` or
+        ``bytes``. Takes precedence over ``password`` when both are given.
     :param database: Database to use, None to not use a particular one.
     :param port: MySQL port to use, default is usually OK. (default: 3306)
     :param unix_socket: Use a unix socket rather than TCP/IP.
@@ -340,6 +349,7 @@ class Connection:
             *,
             user=None,  # The first four arguments is based on DB-API 2.0 recommendation.
             password="",
+            password_creator=None,
             host=None,
             database=None,
             unix_socket=None,
@@ -438,6 +448,7 @@ class Connection:
             raise ValueError("port should be of type int")
         self._user = user or DEFAULT_USER
         self._password = password or b""
+        self._password_creator = password_creator
         if isinstance(self._password, str):
             self._password = self._password.encode("latin1")
         self._db = database
@@ -826,6 +837,8 @@ class Connection:
             await self._read_ok_packet()
         except Exception:
             if reconnect:
+                self.close()
+                self._connected = False
                 await self.connect()
                 await self.ping(False)
             else:
@@ -840,6 +853,24 @@ class Connection:
         self._charset = charset
         self._encoding = encoding
 
+    async def _refresh_password(self):
+        """Ask password_creator for a fresh credential before authenticating."""
+        password = self._password_creator()
+        # Not iscoroutine: a creator wrapping an async client may hand back a
+        # Task or any awaitable, and those must be awaited too.
+        if inspect.isawaitable(password):
+            password = await password
+        if isinstance(password, str):
+            password = password.encode("latin1")
+        elif isinstance(password, (bytes, bytearray)):
+            password = bytes(password)
+        else:
+            raise ValueError(
+                "password_creator must return str or bytes, got %s"
+                % type(password).__name__
+            )
+        self._password = password
+
     async def connect(self):
         if self._connected:
             return self._proto, self._transport
@@ -852,6 +883,9 @@ class Connection:
             self._bulk_supported = False
             loop = self._loop
             self._tls_established = False
+
+            if self._password_creator is not None:
+                await self._refresh_password()
 
             if self._sock is not None:
                 if self._sock_consumed:
@@ -1950,6 +1984,7 @@ class LoadLocalFile:
 
 def connect(user=None,
             password="",
+            password_creator=None,
             host=None,
             database=None,
             unix_socket=None,
@@ -1982,6 +2017,7 @@ def connect(user=None,
     coro = _connect(
         user=user,
         password=password,
+        password_creator=password_creator,
         host=host,
         database=database,
         unix_socket=unix_socket,

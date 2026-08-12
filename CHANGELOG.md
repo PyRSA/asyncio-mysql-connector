@@ -14,6 +14,11 @@
   works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
 - Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
   made `GtidSet` (and therefore GTID replication) unusable (#59).
+- Add `connect(password_creator=...)`: a callable consulted before every connection attempt,
+  including the ones a pool makes when it recycles or reconnects, so short-lived credentials such
+  as AWS RDS IAM tokens can be refreshed. May return an awaitable. Thanks @DolevGabay (#139).
+- Fix `ping(reconnect=True)` never actually reconnecting: `_connected` stayed set when the ping
+  failed, so `connect()` returned early and the follow-up ping ran on the dead connection.
 - Add `connect(query_callback=...)`, called as `callback(cursor, query, elapsed_ms)` after every
   statement. Lets statement logging go somewhere other than `echo`'s hardcoded INFO line — a
   slow-query log, a tracing span, a different level. `executemany`/`callproc` report once per

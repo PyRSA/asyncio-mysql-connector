@@ -162,6 +162,38 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Rotating credentials
+
+Some credentials expire while a pooled connection outlives them — AWS RDS IAM auth tokens last 15
+minutes, for instance. Pass `password_creator` instead of `password` and it is consulted before
+every connection attempt, including the ones the pool makes on its own when it recycles or
+reconnects:
+
+```py
+import boto3
+
+client = boto3.client("rds")
+
+
+def rds_auth_token():
+    return client.generate_db_auth_token(
+        DBHostname="mydb.cluster.amazonaws.com",
+        Port=3306,
+        DBUsername="dbuser",
+        Region="us-east-1",
+    )
+
+
+pool = await asyncmy.create_pool(
+    host="mydb.cluster.amazonaws.com",
+    user="dbuser",
+    password_creator=rds_auth_token,
+)
+```
+
+The callable may be a plain function or return an awaitable, and must return `str` or `bytes`. If
+both `password` and `password_creator` are given, the creator wins.
+
 ### Statement logging
 
 `echo=True` logs every statement and its duration to the `asyncmy` logger at INFO level. Nothing
