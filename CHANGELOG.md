@@ -14,6 +14,12 @@
   works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
 - Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
   made `GtidSet` (and therefore GTID replication) unusable (#59).
+- Add `connect(sock=...)`: speak MySQL over a socket the caller has already connected. Combined
+  with `ssl` the TLS handshake runs before the MySQL handshake instead of being negotiated
+  in-protocol, which is what connectors fronting the server with a TLS proxy need (#71).
+- Mark the connection secure after the TLS handshake. `_secure` was only set for unix sockets, so
+  `caching_sha2_password` full authentication over TLS took the RSA branch instead of sending the
+  password in the clear, and the server rejected it with `1045 Access denied` (#117).
 
 ### 0.2.13
 

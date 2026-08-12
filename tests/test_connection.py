@@ -74,3 +74,41 @@ async def test_transaction(connection):
         True,
     )
     await connection.rollback()
+
+
+@pytest.mark.asyncio
+async def test_tls_connection_is_marked_secure():
+    """caching_sha2_password full auth sends the password in the clear over a
+    secure channel; if _secure stays False it takes the RSA branch and the
+    server rejects it with 1045."""
+    kwargs = {k: v for k, v in connection_kwargs.items() if k != "ssl"}
+    connection = Connection(ssl=True, **kwargs)
+    try:
+        await connection.connect()
+    except OperationalError:
+        pytest.skip("server does not accept TLS connections")
+    assert connection._secure
+    await connection.ensure_closed()
+
+
+@pytest.mark.asyncio
+async def test_full_auth_over_tls():
+    """Regression test: clearing the server's auth cache forces full auth."""
+    admin = Connection(**connection_kwargs)
+    await admin.connect()
+    try:
+        await admin.query("FLUSH PRIVILEGES")
+    except Exception:
+        await admin.ensure_closed()
+        pytest.skip("cannot flush the server auth cache")
+    await admin.ensure_closed()
+
+    kwargs = {k: v for k, v in connection_kwargs.items() if k != "ssl"}
+    connection = Connection(ssl=True, **kwargs)
+    try:
+        await connection.connect()
+    except OperationalError as e:
+        if e.args[0] == 1045:
+            raise
+        pytest.skip("server does not accept TLS connections")
+    await connection.ensure_closed()

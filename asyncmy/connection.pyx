@@ -283,6 +283,15 @@ class Connection:
     :param database: Database to use, None to not use a particular one.
     :param port: MySQL port to use, default is usually OK. (default: 3306)
     :param unix_socket: Use a unix socket rather than TCP/IP.
+    :param sock:
+        An already-connected socket to speak MySQL over, instead of connecting
+        to ``host``/``port`` ourselves. Combine it with ``ssl`` to hand the
+        driver a connection whose TLS is set up by the caller rather than
+        negotiated in-protocol — what connectors that front the server with a
+        TLS proxy (e.g. Cloud SQL) need. The socket is used by a single
+        connection and is closed with it, so a pool needs a fresh socket per
+        connection; reconnecting one raises. Keep-alive and TCP_NODELAY are
+        left to the caller.
     :param read_timeout: The timeout for reading from the connection in seconds (default: None - no timeout)
     :param charset: Charset to use.
     :param sql_mode: Default SQL_MODE to use.
@@ -327,6 +336,7 @@ class Connection:
             host=None,
             database=None,
             unix_socket=None,
+            sock=None,
             port=0,
             charset="",
             sql_mode=None,
@@ -401,7 +411,13 @@ class Connection:
         if ssl:
             if not SSL_ENABLED:
                 raise NotImplementedError("SSL module not found")
-            client_flag |= SSL
+            if sock is None:
+                # With a caller-supplied socket the TLS handshake happens
+                # before any MySQL byte is sent, so the server must not be
+                # asked for an in-protocol upgrade — advertising CLIENT_SSL
+                # and then not sending the SSL request packet is a
+                # `1043 Bad handshake`.
+                client_flag |= SSL
             self._ssl_context = self._create_ssl_ctx(ssl)
 
         self._echo = echo
@@ -417,6 +433,9 @@ class Connection:
             self._password = self._password.encode("latin1")
         self._db = database
         self._unix_socket = unix_socket
+        self._sock = sock
+        self._sock_consumed = False
+        self._tls_established = False
         if not (0 < connect_timeout <= 31536000):
             raise ValueError("connect_timeout should be >0 and <=31536000")
         self._connect_timeout = connect_timeout or None
@@ -823,8 +842,36 @@ class Connection:
             self._mariadb_ext_caps = 0
             self._bulk_supported = False
             loop = self._loop
+            self._tls_established = False
 
-            if self._unix_socket:
+            if self._sock is not None:
+                if self._sock_consumed:
+                    raise errors.OperationalError(
+                        CR_SERVER_LOST,
+                        "Cannot reconnect a connection built from a user-supplied "
+                        "socket; pass a fresh socket to connect(sock=...)",
+                    )
+                self._sock_consumed = True
+                proto = _MySQLProtocol(loop)
+                # With an ssl context the TLS handshake runs now, before any
+                # MySQL bytes, instead of the in-protocol upgrade below: the
+                # peer here is the caller's endpoint, not necessarily a server
+                # that speaks MySQL's STARTTLS dance.
+                self._transport, _ = await asyncio.wait_for(
+                    loop.create_connection(
+                        lambda: proto,
+                        sock=self._sock,
+                        ssl=self._ssl_context,
+                        server_hostname=self._host if self._ssl_context else None,
+                    ),
+                    timeout=self._connect_timeout,
+                )
+                self._proto = proto
+                self.host_info = "socket %s" % (self._sock,)
+                if self._ssl_context is not None:
+                    self._secure = True
+                    self._tls_established = True
+            elif self._unix_socket:
                 proto = _MySQLProtocol(loop)
                 self._transport, _ = await asyncio.wait_for(
                     loop.create_unix_connection(lambda: proto, self._unix_socket),
@@ -849,7 +896,8 @@ class Connection:
                             continue
                         raise
                 self.host_info = "socket %s:%d" % (self._host, self._port)
-            if not self._unix_socket:
+            # A caller-supplied socket is left exactly as it was configured.
+            if not self._unix_socket and self._sock is None:
                 self._set_nodelay(True)
             self._next_seq_id = 0
 
@@ -1098,7 +1146,9 @@ class Connection:
             raise ValueError("Did not specify a username")
 
         charset_id = charset_by_name(self._charset).id
-        if self._ssl_context:
+        # _tls_established means the caller handed us a socket that is already
+        # encrypted, so there is no in-protocol upgrade left to do.
+        if self._ssl_context and not self._tls_established:
             # capablities, max packet, charset
             data = IIB.pack(self._client_flag, MAX_PACKET_LEN, charset_id)
             data += b'\x00' * (32 - len(data))
@@ -1125,6 +1175,11 @@ class Connection:
                 server_hostname=self._host,
             )
             self._proto = proto
+            # The channel is encrypted from here on. caching_sha2_password
+            # full auth sends the password in the clear over a secure channel;
+            # without this it took the RSA branch instead and the server, which
+            # expects cleartext on a TLS connection, replied 1045 (#117).
+            self._secure = True
         if isinstance(self._user, str):
             self._user = self._user.encode(self._encoding)
 
@@ -1889,6 +1944,7 @@ def connect(user=None,
             host=None,
             database=None,
             unix_socket=None,
+            sock=None,
             port=0,
             charset="",
             sql_mode=None,
@@ -1919,6 +1975,7 @@ def connect(user=None,
         host=host,
         database=database,
         unix_socket=unix_socket,
+        sock=sock,
         port=port,
         charset=charset,
         sql_mode=sql_mode,
