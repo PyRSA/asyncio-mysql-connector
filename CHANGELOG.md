@@ -14,6 +14,9 @@
   works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
 - Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
   made `GtidSet` (and therefore GTID replication) unusable (#59).
+- Ship type information (PEP 561): `py.typed` plus `.pyi` stubs for the Cython modules, so
+  mypy and Pylance see real signatures instead of nothing. `make stubs` regenerates them and
+  `make check` runs `stubtest`, which fails on any drift from the compiled modules (#78).
 - Add `connect(password_creator=...)`: a callable consulted before every connection attempt,
   including the ones a pool makes when it recycles or reconnects, so short-lived credentials such
   as AWS RDS IAM tokens can be refreshed. May return an awaitable. Thanks @DolevGabay (#139).

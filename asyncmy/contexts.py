@@ -1,10 +1,19 @@
 from __future__ import annotations
 from collections.abc import Coroutine
-from typing import Any
-from collections.abc import Iterator
+from typing import Any, Generic, TypeVar
+from collections.abc import Generator, Iterator
+
+_T = TypeVar("_T")
 
 
-class _ContextManager(Coroutine):
+class _ContextManager(Coroutine[Any, Any, _T], Generic[_T]):
+    """Awaitable that is also an async context manager yielding ``_T``.
+
+    ``await connect(...)`` and ``async with connect(...)`` both hand back the
+    same object, so the parameter is what lets callers get a real type out of
+    either spelling.
+    """
+
     __slots__ = ("_coro", "_obj")
 
     def __init__(self, coro: Coroutine) -> None:
@@ -43,10 +52,10 @@ class _ContextManager(Coroutine):
     def __iter__(self) -> Iterator:
         return self._coro.__await__()
 
-    def __await__(self) -> Any:
+    def __await__(self) -> Generator[Any, None, _T]:
         return self._coro.__await__()
 
-    async def __aenter__(self) -> Any:
+    async def __aenter__(self) -> _T:
         self._obj = await self._coro
         return self._obj
 
@@ -55,23 +64,23 @@ class _ContextManager(Coroutine):
         self._obj = None
 
 
-class _PoolContextManager(_ContextManager):
+class _PoolContextManager(_ContextManager[_T]):
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._obj.close()
         await self._obj.wait_closed()
         self._obj = None
 
 
-class _PoolAcquireContextManager(_ContextManager):
+class _PoolAcquireContextManager(_ContextManager[_T]):
     __slots__ = ("_coro", "_conn", "_pool")
 
     def __init__(self, coro, pool) -> None:
         super().__init__(coro)
         self._coro = coro
-        self._conn = None
+        self._conn: Any = None
         self._pool = pool
 
-    async def __aenter__(self) -> Any:
+    async def __aenter__(self) -> _T:
         self._conn = await self._coro
         return self._conn
 
@@ -83,7 +92,7 @@ class _PoolAcquireContextManager(_ContextManager):
             self._conn = None
 
 
-class _ConnectionContextManager(_ContextManager):
+class _ConnectionContextManager(_ContextManager[_T]):
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if exc_type is not None:
             self._obj.close()

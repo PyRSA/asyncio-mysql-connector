@@ -162,6 +162,20 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Type checking
+
+asyncmy ships `py.typed` and stubs for its compiled modules, so mypy and Pylance resolve the API
+without extra configuration:
+
+```py
+conn = await asyncmy.connect(host="localhost", user="root")   # -> Connection
+async with conn.cursor() as cur:
+    rows = await cur.fetchall()                               # -> list[Any]
+```
+
+Contributors: `make stubs` regenerates the stubs after changing a `.pyx` signature. `make check`
+runs `stubtest`, which compares every stub against the compiled module and fails on drift.
+
 ### Rotating credentials
 
 Some credentials expire while a pooled connection outlives them — AWS RDS IAM auth tokens last 15
