@@ -14,6 +14,14 @@
   works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
 - Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
   made `GtidSet` (and therefore GTID replication) unusable (#59).
+- Declare the Cython modules free-threading compatible. Without this, importing asyncmy
+  re-enables the GIL for the whole process on a free-threaded build. Module-level state is built
+  during import and read-only afterwards; this does not make a single `Connection`/`Cursor` safe
+  to share between threads. Requires Cython 3.1+, and CI now runs the suite on 3.14t.
+  Thanks @honglei (#151).
+- Read the version from the installed package metadata instead of repeating it in
+  `asyncmy/version.py`, so `pyproject.toml` is the single source and the `_client_version` the
+  server sees cannot drift. Thanks @waketzheng (#149).
 - Ship type information (PEP 561): `py.typed` plus `.pyi` stubs for the Cython modules, so
   mypy and Pylance see real signatures instead of nothing. `make stubs` regenerates them and
   `make check` runs `stubtest`, which fails on any drift from the compiled modules (#78).

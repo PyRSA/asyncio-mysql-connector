@@ -1,3 +1,9 @@
+# cython: freethreading_compatible=True
+# Declares the module safe to import without re-enabling the GIL on
+# free-threaded CPython. Module-level state (encoders/decoders, error_map,
+# charset tables, escape table) is built during import and read-only after;
+# per-connection state lives on the instances. It does NOT make a single
+# Connection/Cursor safe to share between threads.
 import re
 import time
 from decimal import Decimal

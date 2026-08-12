@@ -29,7 +29,7 @@ packages = [
 
 [dependency-groups]
 dev = [
-    "cython",
+    "cython>=3.1",
     "mypy",
     "rich",
     "ruff",
@@ -55,7 +55,7 @@ script = "build_cython.py"
 
 [build-system]
 build-backend = "poetry.core.masonry.api"
-requires = ["poetry-core", "setuptools", "cython"]
+requires = ["poetry-core", "setuptools", "cython>=3.1"]  # freethreading_compatible directive
 
 [tool.pytest.ini_options]
 asyncio_mode = 'auto'

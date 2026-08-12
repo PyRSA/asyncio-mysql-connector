@@ -49,7 +49,7 @@ test = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cython" },
+    { name = "cython", specifier = ">=3.1" },
     { name = "mypy" },
     { name = "rich" },
     { name = "ruff" },
