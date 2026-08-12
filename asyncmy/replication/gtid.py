@@ -210,6 +210,11 @@ class Gtid:
             return False
         return self.intervals == other.intervals
 
+    def __hash__(self):
+        # Defining __eq__ sets __hash__ to None, which makes Gtid unusable in
+        # the set that GtidSet requires (#59).
+        return hash((self.sid, tuple(self.intervals)))
+
     def __lt__(self, other):
         if other.sid != self.sid:
             return self.sid < other.sid
@@ -291,3 +296,6 @@ class GtidSet:
 
     def __eq__(self, other: GtidSet):  # type: ignore[override]
         return self._gtid_set == other._gtid_set
+
+    def __hash__(self):
+        return hash(frozenset(self._gtid_set))

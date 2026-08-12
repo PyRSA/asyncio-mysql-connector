@@ -485,8 +485,17 @@ class Connection:
     def _create_ssl_ctx(self, sslp):
         if isinstance(sslp, ssl.SSLContext):
             return sslp
+        elif sslp is True:
+            # `ssl=True` means "use TLS with default settings" (the form DSN
+            # parsers produce for `?ssl=True`). Previously this returned None
+            # while SSL stayed advertised in the client flags, so the
+            # connection silently fell back to plaintext (#90).
+            sslp = {}
         elif not isinstance(sslp, dict):
-            return
+            raise ValueError(
+                "ssl argument must be True, a dict of ssl options, "
+                "or an ssl.SSLContext, got %r" % (type(sslp).__name__,)
+            )
         ca = sslp.get("ca")
         capath = sslp.get("capath")
         hasnoca = ca is None and capath is None

@@ -3,7 +3,14 @@ from .structs import H
 
 
 cdef class MySQLError(Exception):
-    """Exception related to operation with MySQL."""
+    """Exception related to operation with MySQL.
+
+    ``sqlstate`` holds the 5-character SQLSTATE code the server sent with the
+    error, or ``None`` when the error did not carry one (older servers, or
+    errors raised client-side). ``args`` is unchanged: ``(errno, message)``.
+    """
+
+    cdef public object sqlstate
 
 cdef class Warning(MySQLError):
     """Exception raised for important warnings like data truncations
@@ -126,12 +133,18 @@ _map_error(
 )
 
 cpdef raise_mysql_exception(bytes data):
+    cdef object sqlstate
     errno = H.unpack(data[1:3])[0]
     if data[3] == ord("#"):
+        # SQL state marker: '#' followed by the 5-character SQLSTATE.
+        sqlstate = data[4:9].decode("ascii", "replace")
         err_val = data[9:].decode("utf-8", "replace")
     else:
+        sqlstate = None
         err_val = data[3:].decode("utf-8", "replace")
     error_class = error_map.get(errno)
     if error_class is None:
         error_class = InternalError if errno < 1000 else OperationalError
-    raise error_class(errno, err_val)
+    exc = error_class(errno, err_val)
+    exc.sqlstate = sqlstate
+    raise exc

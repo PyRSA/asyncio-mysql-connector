@@ -18,6 +18,12 @@ logger = logging.getLogger(__package__)
 if typing.TYPE_CHECKING:
     from asyncmy.connection import Connection
 
+
+def _already_resolved(obj):
+    """Iterator that finishes immediately with ``obj`` as the await result."""
+    return obj
+    yield  # noqa: unreachable - makes this a generator function
+
 cdef class Cursor:
     """
     This is the object used to interact with the database.
@@ -68,6 +74,12 @@ cdef class Cursor:
 
     def __aiter__(self):
         return self
+
+    def __await__(self):
+        # aiomysql's Connection.cursor() is a coroutine, so code written
+        # against it does `cur = await conn.cursor()`. Ours returns the cursor
+        # directly; making it awaitable keeps both spellings working (#145).
+        return _already_resolved(self)
 
     async def __aenter__(self):
         return self

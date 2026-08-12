@@ -178,3 +178,20 @@ def test_executemany_regex():
     query = "INSERT INTO foo (bar, baz) VALUES (%s, %s), (%s, %s)"
     match = RE_INSERT_VALUES.match(query)
     assert match is None
+
+
+@pytest.mark.asyncio
+async def test_cursor_is_awaitable(connection):
+    """aiomysql's conn.cursor() is a coroutine; `await` must work here too."""
+    cursor = await connection.cursor()
+    await cursor.execute("SELECT 1")
+    assert await cursor.fetchone() == (1,)
+    await cursor.close()
+
+
+@pytest.mark.asyncio
+async def test_awaited_cursor_honours_cursor_class(connection):
+    cursor = await connection.cursor(DictCursor)
+    await cursor.execute("SELECT 1 AS one")
+    assert await cursor.fetchone() == {"one": 1}
+    await cursor.close()

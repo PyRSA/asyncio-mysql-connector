@@ -2,6 +2,19 @@
 
 ## 0.2
 
+### 0.2.14
+
+- Set the PEP 249 module globals `apilevel`, `threadsafety` and `paramstyle`, and export the
+  exception classes from `asyncmy` (#77).
+- Expose the server's SQLSTATE on exceptions as `MySQLError.sqlstate`; `args` is unchanged (#138).
+- Fix `ssl=True` silently connecting in plaintext: it now builds a default TLS context, and an
+  ssl argument that is neither `True`, a dict, nor an `ssl.SSLContext` raises `ValueError`
+  instead of disabling TLS (#90).
+- `Connection.cursor()` is now awaitable, so aiomysql's `cur = await conn.cursor()` spelling
+  works; `conn.cursor()` and `async with conn.cursor()` are unaffected (#145).
+- Add `Gtid.__hash__` / `GtidSet.__hash__` — defining `__eq__` had made `Gtid` unhashable, which
+  made `GtidSet` (and therefore GTID replication) unusable (#59).
+
 ### 0.2.13
 
 - Add server-side prepared statements (binary protocol): `stmt = await conn.prepare(sql)`,

@@ -1,4 +1,5 @@
 import re
+import ssl as ssl_module
 
 import pytest
 
@@ -28,6 +29,32 @@ async def test_read_timeout():
         await connection.connect()
         async with connection.cursor() as cursor:
             await cursor.execute("DO SLEEP(3)")
+
+
+@pytest.mark.asyncio
+async def test_ssl_true_builds_a_context():
+    """`ssl=True` must actually enable TLS, not silently fall back to plaintext."""
+    connection = Connection(ssl=True)
+    assert isinstance(connection._ssl_context, ssl_module.SSLContext)
+
+
+@pytest.mark.asyncio
+async def test_ssl_context_is_passed_through():
+    context = ssl_module.create_default_context()
+    assert Connection(ssl=context)._ssl_context is context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, False])
+async def test_ssl_disabled(value):
+    assert Connection(ssl=value)._ssl_context is None
+
+
+@pytest.mark.asyncio
+async def test_ssl_rejects_unusable_value():
+    """A CA path passed as a bare string used to disable TLS silently."""
+    with pytest.raises(ValueError):
+        Connection(ssl="/path/to/ca.pem")
 
 
 @pytest.mark.asyncio
