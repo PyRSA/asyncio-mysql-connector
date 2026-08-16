@@ -2,6 +2,12 @@
 
 ## 0.2
 
+### 0.2.15
+
+- Fix `Pool.wait_closed()` blocking forever when the last connection was released while inside a
+  transaction or after disconnecting, and notify pool waiters when a pool-filling `connect()`
+  raises (#154).
+
 ### 0.2.14
 
 - Set the PEP 249 module globals `apilevel`, `threadsafety` and `paramstyle`, and export the
