@@ -159,9 +159,11 @@ class Pool(asyncio.AbstractServer):
                 conn = await connect(**self._conn_kwargs)
                 # raise exception if pool is closing
                 self._free.append(conn)
-                self._cond.notify()
             finally:
+                # decrementing _acquiring changes size, so waiters must be
+                # notified even when connect() raised
                 self._acquiring -= 1
+                self._cond.notify()
         if self._free:
             return
 
@@ -171,9 +173,9 @@ class Pool(asyncio.AbstractServer):
                 conn = await connect(**self._conn_kwargs)
                 # raise exception if pool is closing
                 self._free.append(conn)
-                self._cond.notify()
             finally:
                 self._acquiring -= 1
+                self._cond.notify()
 
     async def _wakeup(self):
         async with self._cond:
@@ -195,14 +197,15 @@ class Pool(asyncio.AbstractServer):
         if conn.connected:
             in_trans = conn.get_transaction_status()
             if in_trans:
+                # connection with an open transaction is discarded, see #36
                 conn.close()
-                return fut
-            if self._closing:
+            elif self._closing:
                 conn.close()
             else:
                 self._free.append(conn)
-            fut = self._loop.create_task(self._wakeup())
-        return fut
+        # removing from _used changed size, so wait_closed()/acquire() waiters
+        # must be woken on every path
+        return self._loop.create_task(self._wakeup())
 
     async def __aenter__(self):
         return self
